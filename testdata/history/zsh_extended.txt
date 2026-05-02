@@ -1,0 +1,20 @@
+: 1714000001:0;git status
+: 1714000002:0;git add .
+: 1714000003:0;git commit -m "feat: add user authentication"
+: 1714000004:0;git push origin main
+: 1714000005:0;git checkout feature/billing
+: 1714000006:0;git checkout develop
+: 1714000007:0;docker build -t myapp:latest .
+: 1714000008:0;docker run -it --rm myapp:latest bash
+: 1714000009:0;docker ps -a
+: 1714000010:0;docker logs myapp-container --follow
+: 1714000011:0;curl -H "Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ" https://api.github.com/user
+: 1714000012:0;curl -X POST https://api.example.com/data -d '{"key":"value"}'
+: 1714000013:0;aws s3 cp report.pdf s3://my-bucket/reports/ --region eu-west-1
+: 1714000014:0;aws s3 ls s3://my-bucket --recursive
+: 1714000015:0;kubectl get pods -n staging
+: 1714000016:0;kubectl logs pod/my-app-yyy -n staging --tail=50
+: 1714000017:0;terraform plan -out=tfplan
+: 1714000018:0;terraform apply tfplan
+: 1714000019:0;npm run build
+: 1714000020:0;go test -race ./...

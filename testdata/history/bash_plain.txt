@@ -1,0 +1,22 @@
+# 1714000000
+git status
+git add .
+git commit -m "fix: update payment service"
+git push origin main
+git checkout feature/billing
+git checkout develop
+docker build -t myapp:latest .
+docker run -it --rm myapp:latest bash
+docker ps -a
+docker logs myapp-container --follow
+curl -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c" https://api.example.com/v1/users
+# 1714001000
+curl -X POST https://api.example.com/data -d '{"key":"value"}'
+aws s3 cp myfile.txt s3://my-bucket/path/ --region us-east-1
+aws s3 ls s3://my-bucket --recursive
+kubectl get pods -n production
+kubectl logs pod/my-app-xxx -n production --tail=100
+terraform apply -auto-approve
+npm install --save-dev typescript
+go test ./...
+go build -o bin/myapp ./cmd/myapp

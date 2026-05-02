@@ -1,0 +1,23 @@
+# Binaries
+bin/
+aka
+*.exe
+*.out
+
+# Environment
+.env
+
+# Go build cache
+*.test
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Local Claude settings (contains tokens)
+.claude/settings.local.json
