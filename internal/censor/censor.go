@@ -43,9 +43,6 @@ var secretPatterns = []secretPattern{
 	{regexp.MustCompile(`://[^:@\s]+:[^@\s]+@`), "URL_CREDS"},
 }
 
-// valueRe matches a potential high-entropy standalone token.
-var valueRe = regexp.MustCompile(`[A-Za-z0-9+/=_\-.]{20,}`)
-
 // shannonEntropy calculates the Shannon entropy of a string in bits/char.
 func shannonEntropy(s string) float64 {
 	if len(s) == 0 {
@@ -83,11 +80,6 @@ func isLikelySecret(s string) bool {
 // deterministic <SECRET_n> / <TOKEN_n> / etc. placeholders.
 // Same literal value always gets the same placeholder index.
 func CensorSecrets(commands []string) (censored []string, redactionMap map[string]string) {
-	// First pass: collect all candidate values in sorted order for determinism.
-	type candidate struct {
-		value string
-		label string
-	}
 	seen := make(map[string]string) // value → label (first match wins)
 
 	for _, cmd := range commands {
@@ -283,14 +275,6 @@ func ParameterizeVars(commands []string) (parameterized []string, varMap map[str
 				posIdx++
 			}
 		}
-	}
-
-	// For each cluster, determine which slots should become variables.
-	// Also assign global var indices (sorted for determinism).
-	type varAssignment struct {
-		shapeKey string
-		slotIdx  int
-		varName  string // e.g. "PATH_1"
 	}
 
 	// Collect all (shapeKey, slotIdx, distinctValues) triples that need vars.

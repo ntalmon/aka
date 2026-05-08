@@ -47,7 +47,7 @@ func runInit(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
-	ui.PrintSuccess(fmt.Sprintf("✓ AKA initialized!"))
+	ui.PrintSuccess("✓ AKA initialized!")
 	fmt.Printf("  Aliases file: %s\n", aliasesPath)
 	fmt.Printf("  Source line added to: %s\n", rcFile)
 	fmt.Println("\nRun `aka analyze` to generate your first aliases.")

@@ -171,7 +171,9 @@ func TestToolSchemaHasSuggestionsProperty(t *testing.T) {
 func TestToolSchemaSuggestionsIsRequired(t *testing.T) {
 	schema, _ := ToolSchema()
 	var obj map[string]interface{}
-	json.Unmarshal(schema, &obj)
+	if err := json.Unmarshal(schema, &obj); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
 
 	required, ok := obj["required"].([]interface{})
 	if !ok {

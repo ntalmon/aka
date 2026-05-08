@@ -95,8 +95,7 @@ func TestCensorSecretsDontRedactNormalStrings(t *testing.T) {
 
 func TestCensorSecretsOpenAIKey(t *testing.T) {
 	// sk- followed by 48 alphanumeric chars.
-	key := "sk-" + strings.Repeat("abcABC123", 6)                              // 54 chars total — needs exactly 48 after sk-
-	key = "sk-" + strings.Repeat("abcABC1", 6) + strings.Repeat("23456789", 3) // 48 alphanum
+	key := "sk-" + strings.Repeat("abcABC1", 6) + strings.Repeat("23456789", 3) // 48 alphanum
 	cmds := []string{"curl -H 'Authorization: Bearer " + key + "' https://api.openai.com/v1/completions"}
 	censored, _ := CensorSecrets(cmds)
 	if strings.Contains(censored[0], key) {
