@@ -11,7 +11,7 @@ import (
 
 // Config holds all AKA configuration options.
 type Config struct {
-	Provider        string `toml:"provider" mapstructure:"provider"`                 // "anthropic" | "groq"
+	Provider        string `toml:"provider" mapstructure:"provider"` // "anthropic" | "groq"
 	Model           string `toml:"model" mapstructure:"model"`
 	DryRun          bool   `toml:"dry_run" mapstructure:"dry_run"`
 	MaxHistory      int    `toml:"max_history" mapstructure:"max_history"`
