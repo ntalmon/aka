@@ -1,6 +1,6 @@
 # AKA — shell history analyzer and alias manager
 
-AKA (`aka`) reads your shell history, censors sensitive data locally, and uses the Anthropic API to suggest useful shell aliases and shell functions — then writes the ones you accept into a single dedicated file (`~/.config/aka/aliases.sh`) that your shell sources automatically. See [PLAN.md](PLAN.md) for the full design document.
+AKA (`aka`) reads your shell history, censors sensitive data locally, and uses the Anthropic API to suggest useful shell aliases and shell functions — then writes the ones you accept into a single dedicated file (`~/.config/aka/aliases.sh`) that your shell sources automatically..
 
 ## Quick start
 
