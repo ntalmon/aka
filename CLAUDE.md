@@ -19,6 +19,8 @@ go install ./cmd/aka                   # install `aka` binary to $GOPATH/bin
 
 CI additionally runs `golangci-lint` — run it locally if adding new packages or exported symbols.
 
+After every Go file edit, run `go build ./cmd/aka` to verify the binary still compiles. This is also enforced automatically via a PostToolUse hook in `.claude/settings.json`.
+
 ## Architecture
 
 The repo root is the Go module (`github.com/ntalmon/aka/aka-cli`).
@@ -47,9 +49,11 @@ Each step is a thin wrapper over its `internal/` package. The cobra subcommand i
 
 `config.toml` fields: `provider` ("anthropic" \| "groq"), `model`, `anthropic_api_key`, `groq_api_key`, `dry_run`, `max_history`. API keys are stored here in plaintext — no env vars or OS keychain involved.
 
+`max_history` (default 500) caps how many normalized entries are sent to the LLM. When the normalized count exceeds the limit, `ui.ChooseMaxHistory` prompts the user to continue with the current limit, send all entries for this run, or change the limit permanently (saved back to `config.toml`).
+
 ### History entries (`internal/history/`)
 
-`ReadAll` returns `[]history.Entry{Timestamp int64, Command string}`. `Timestamp` is a Unix epoch second; **0 means unknown** (plain history files with no timestamp format). Zsh extended history (`: EPOCH:DURATION;CMD`, enabled by `setopt EXTENDED_HISTORY`) and bash `HISTTIMEFORMAT` both populate it. `normalize.Normalize` deduplicates by exact command string and carries the **last occurrence's timestamp** on the retained entry.
+`ReadAll` returns `[]history.Entry{Timestamp int64, Command string}`. `Timestamp` is a Unix epoch second; **0 means unknown** (plain history files with no timestamp format). Zsh extended history (`: EPOCH:DURATION;CMD`, enabled by `setopt EXTENDED_HISTORY`) and bash `HISTTIMEFORMAT` both populate it. `normalize.Normalize` only trims whitespace and drops blank lines — duplicates and trivial commands are preserved so the LLM sees full sequential workflow patterns.
 
 ### Censor pipeline (`internal/censor/`)
 

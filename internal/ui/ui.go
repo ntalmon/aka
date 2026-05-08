@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -17,7 +18,6 @@ import (
 	"github.com/ntalmon/aka/aka-cli/internal/llm"
 )
 
-// Styles.
 var (
 	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
 	addStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green
@@ -26,6 +26,20 @@ var (
 	mutedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))  // gray
 	successStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))
 )
+
+const asciiArt = `
+ █████╗ ██╗  ██╗ █████╗
+██╔══██╗██║ ██╔╝██╔══██╗
+███████║█████╔╝ ███████║
+██╔══██║██╔═██╗ ██╔══██║
+██║  ██║██║  ██╗██║  ██║
+╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝`
+
+// PrintBanner prints the AKA ASCII art banner.
+func PrintBanner() {
+	fmt.Println(titleStyle.Render(asciiArt))
+	fmt.Println(mutedStyle.Render("  also known as · your shell alias coach\n"))
+}
 
 // ReviewCensored renders a diff of original vs censored commands and asks the user to confirm.
 // Returns true if the user accepts the censored version.
@@ -58,93 +72,79 @@ func ReviewCensored(original, censored []history.Entry) (bool, error) {
 		}
 	}
 
-	fmt.Print(titleStyle.Render("Send the censored commands to the LLM?") + " [y/N] ")
+	fmt.Print(titleStyle.Render(fmt.Sprintf("Send %d commands to the LLM?", len(censored))) + " [y/N] ")
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Scan()
 	answer := strings.ToLower(strings.TrimSpace(scanner.Text()))
 	return answer == "y" || answer == "yes", nil
 }
 
-const pageSize = 3
+const pageSize = 5
 
-// ReviewSuggestions presents suggestions interactively in pages of pageSize.
-// After each page the user is asked whether to see more.
-// Returns the accepted (and possibly renamed) suggestions.
+// ReviewSuggestions presents suggestions in batches of pageSize with multi-select.
+// The user sees all details for the batch, then picks which to keep, then optionally continues.
+// Returns the accepted suggestions.
 func ReviewSuggestions(suggestions []llm.Suggestion) ([]llm.Suggestion, error) {
 	if len(suggestions) == 0 {
 		fmt.Println(mutedStyle.Render("No suggestions returned by the LLM."))
 		return nil, nil
 	}
 
-	fmt.Println(titleStyle.Render(fmt.Sprintf("\n=== %d Suggestion(s) from AKA ===\n", len(suggestions))))
+	fmt.Println(titleStyle.Render(fmt.Sprintf("\n  %d suggestion(s) ready\n", len(suggestions))))
 
 	var accepted []llm.Suggestion
 
-	for i, s := range suggestions {
-		printSuggestion(i+1, len(suggestions), s)
-
-		opts := []huh.Option[string]{
-			huh.NewOption("Accept", "accept"),
-			huh.NewOption("Reject", "reject"),
-			huh.NewOption("Edit name", "edit"),
+	for start := 0; start < len(suggestions); {
+		end := start + pageSize
+		if end > len(suggestions) {
+			end = len(suggestions)
 		}
-		if i >= pageSize {
-			opts = append(opts, huh.NewOption("Reject remaining and finish", "stop"))
+		batch := suggestions[start:end]
+
+		for i, s := range batch {
+			printSuggestion(start+i+1, len(suggestions), s)
 		}
 
-		var action string
+		opts := make([]huh.Option[int], len(batch))
+		for i, s := range batch {
+			label := fmt.Sprintf("%-14s  [%s]  %s", s.Name, strings.ToLower(s.Kind), s.Template)
+			opts[i] = huh.NewOption(label, start+i).Selected(true)
+		}
+
+		var selected []int
 		form := huh.NewForm(
 			huh.NewGroup(
-				huh.NewSelect[string]().
-					Title("What would you like to do?").
+				huh.NewMultiSelect[int]().
+					Title("Accept these? (space to toggle, enter to confirm)").
 					Options(opts...).
-					Value(&action),
+					Value(&selected),
 			),
 		)
 		if err := form.Run(); err != nil {
 			if strings.Contains(err.Error(), "EOF") {
-				continue
+				break
 			}
 			return accepted, err
 		}
 
-		if action == "stop" {
-			fmt.Println(mutedStyle.Render("  Stopped — remaining suggestions skipped.\n"))
-			break
+		keep := make(map[int]bool, len(selected))
+		for _, idx := range selected {
+			keep[idx] = true
 		}
-
-		switch action {
-		case "accept":
-			accepted = append(accepted, s)
-			fmt.Println(successStyle.Render(fmt.Sprintf("  ✓ Accepted '%s'\n", s.Name)))
-		case "reject":
-			fmt.Println(mutedStyle.Render(fmt.Sprintf("  ✗ Rejected '%s'\n", s.Name)))
-		case "edit":
-			var newName string
-			nameForm := huh.NewForm(
-				huh.NewGroup(
-					huh.NewInput().
-						Title("Enter new name for the alias/function:").
-						Value(&newName).
-						Placeholder(s.Name),
-				),
-			)
-			if err := nameForm.Run(); err != nil {
-				return accepted, err
+		for i, s := range batch {
+			if keep[start+i] {
+				accepted = append(accepted, s)
+				fmt.Println(successStyle.Render(fmt.Sprintf("  ✓ '%s'", s.Name)))
+			} else {
+				fmt.Println(mutedStyle.Render(fmt.Sprintf("  ✗ '%s'", s.Name)))
 			}
-			if strings.TrimSpace(newName) == "" {
-				newName = s.Name
-			}
-			s.Name = strings.TrimSpace(newName)
-			accepted = append(accepted, s)
-			fmt.Println(successStyle.Render(fmt.Sprintf("  ✓ Accepted as '%s'\n", s.Name)))
 		}
+		fmt.Println()
 
-		// After every page (except the last item), ask whether to continue.
-		isPageBoundary := (i+1)%pageSize == 0
-		isLast := i == len(suggestions)-1
-		if isPageBoundary && !isLast {
-			remaining := len(suggestions) - (i + 1)
+		start = end
+
+		if start < len(suggestions) {
+			remaining := len(suggestions) - start
 			var more bool
 			moreForm := huh.NewForm(
 				huh.NewGroup(
@@ -164,12 +164,18 @@ func ReviewSuggestions(suggestions []llm.Suggestion) ([]llm.Suggestion, error) {
 			}
 		}
 	}
+
 	return accepted, nil
 }
 
 // printSuggestion renders a single suggestion to stdout.
 func printSuggestion(idx, total int, s llm.Suggestion) {
-	fmt.Printf("%s\n", titleStyle.Render(fmt.Sprintf("[%d/%d] %s  (%s)", idx, total, s.Name, s.Kind)))
+	fmt.Println(mutedStyle.Render(strings.Repeat("─", 54)))
+	fmt.Printf("%s  %s  %s\n",
+		titleStyle.Render(fmt.Sprintf("[%d/%d]", idx, total)),
+		titleStyle.Render(s.Name),
+		mutedStyle.Render("("+strings.ToLower(s.Kind)+")"),
+	)
 	fmt.Printf("  %s  %s\n", headerStyle.Render("Template:"), s.Template)
 
 	if len(s.Params) > 0 {
@@ -299,6 +305,58 @@ func ChooseHistoryMode(newCount, totalCount int) (string, error) {
 		return "abort", err
 	}
 	return choice, nil
+}
+
+// ChooseMaxHistory is shown when the normalized history exceeds the configured
+// max_history limit. Returns the limit to apply (0 = no limit) and whether
+// the user chose to save the new limit to config.
+func ChooseMaxHistory(currentLimit, totalNormalized int) (limit int, saveToConfig bool, err error) {
+	const (
+		optKeep   = "keep"
+		optAll    = "all"
+		optChange = "change"
+	)
+	var choice string
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(fmt.Sprintf("%d commands after normalization, but max_history is set to %d.", totalNormalized, currentLimit)).
+				Description("Only the most recent commands will be sent unless you adjust the limit.").
+				Options(
+					huh.NewOption(fmt.Sprintf("Continue with %d most recent (current limit)", currentLimit), optKeep),
+					huh.NewOption(fmt.Sprintf("Send all %d commands this run", totalNormalized), optAll),
+					huh.NewOption("Change max_history limit", optChange),
+				).
+				Value(&choice),
+		),
+	)
+	if err = form.Run(); err != nil {
+		return currentLimit, false, err
+	}
+	switch choice {
+	case optAll:
+		return 0, false, nil
+	case optChange:
+		var input string
+		inputForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("New max_history limit:").
+					Description("Maximum number of commands to send to the LLM (saved to config).").
+					Value(&input),
+			),
+		)
+		if err = inputForm.Run(); err != nil {
+			return currentLimit, false, err
+		}
+		n, parseErr := strconv.Atoi(strings.TrimSpace(input))
+		if parseErr != nil || n <= 0 {
+			return currentLimit, false, fmt.Errorf("invalid limit %q: must be a positive integer", input)
+		}
+		return n, true, nil
+	default: // optKeep
+		return currentLimit, false, nil
+	}
 }
 
 func joinCommands(entries []history.Entry) string {

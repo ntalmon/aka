@@ -39,6 +39,8 @@ the Anthropic API to suggest useful shell aliases and functions.`,
 const minNewEntries = 20
 
 func runAnalyze(cmd *cobra.Command, _ []string) error {
+	ui.PrintBanner()
+
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	historyN, _ := cmd.Flags().GetInt("history")
 	fullHistory, _ := cmd.Flags().GetBool("full-history")
@@ -141,8 +143,25 @@ func runAnalyze(cmd *cobra.Command, _ []string) error {
 
 	// Limit to maxHistory.
 	if maxHistory > 0 && len(normalized) > maxHistory {
-		normalized = normalized[len(normalized)-maxHistory:]
-		fmt.Printf("  Capped to %d most recent\n", maxHistory)
+		if dryRun {
+			normalized = normalized[len(normalized)-maxHistory:]
+			fmt.Printf("  Capped to %d most recent (max_history limit)\n", maxHistory)
+		} else {
+			chosenLimit, save, err := ui.ChooseMaxHistory(maxHistory, len(normalized))
+			if err != nil {
+				return fmt.Errorf("choose max history: %w", err)
+			}
+			if save {
+				cfg.MaxHistory = chosenLimit
+				if saveErr := config.Save(cfg); saveErr != nil {
+					fmt.Printf("Warning: could not save config: %v\n", saveErr)
+				}
+			}
+			if chosenLimit > 0 && len(normalized) > chosenLimit {
+				normalized = normalized[len(normalized)-chosenLimit:]
+			}
+			fmt.Printf("  Sending %d commands\n", len(normalized))
+		}
 	}
 
 	if len(normalized) == 0 {
