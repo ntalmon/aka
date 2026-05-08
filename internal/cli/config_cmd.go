@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ntalmon/aka/aka-cli/internal/config"
+	"github.com/ntalmon/aka/aka-cli/internal/llm"
 	"github.com/ntalmon/aka/aka-cli/internal/ui"
 )
 
@@ -21,25 +22,58 @@ func NewConfigCmd() *cobra.Command {
 }
 
 func newSetKeyCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "set-key",
-		Short: "Set (store) your Anthropic API key in the OS keyring",
+		Short: "Store an API key in the OS keyring",
+		Long:  "Store an API key in the OS keyring. Use --provider to specify which provider (anthropic or groq).",
 		RunE:  runSetKey,
 	}
+	cmd.Flags().String("provider", "", "Provider to set the key for: anthropic or groq (default: uses configured provider)")
+	return cmd
 }
 
-func runSetKey(_ *cobra.Command, _ []string) error {
-	key, err := ui.PromptAPIKey()
+func runSetKey(cmd *cobra.Command, _ []string) error {
+	providerFlag, _ := cmd.Flags().GetString("provider")
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	// Resolve provider: explicit flag skips the prompt; otherwise always ask.
+	provider := providerFlag
+	if provider != "" && provider != "anthropic" && provider != "groq" {
+		return fmt.Errorf("unknown provider %q — must be anthropic or groq", provider)
+	}
+	if provider == "" {
+		var err error
+		provider, err = ui.PromptProvider()
+		if err != nil {
+			return fmt.Errorf("select provider: %w", err)
+		}
+	}
+
+	key, err := ui.PromptAPIKey(provider)
 	if err != nil {
 		return fmt.Errorf("prompt API key: %w", err)
 	}
 	if key == "" {
 		return fmt.Errorf("API key cannot be empty")
 	}
-	if err := config.SetAPIKey(key); err != nil {
-		return fmt.Errorf("store API key: %w", err)
+
+	cfg.Provider = provider
+	cfg.Model = llm.ModelsForProvider(provider)[0].ID
+	if provider == "groq" {
+		cfg.GroqAPIKey = key
+	} else {
+		cfg.AnthropicAPIKey = key
 	}
-	ui.PrintSuccess("✓ API key stored in OS keyring")
+
+	if err := config.Save(cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	ui.PrintSuccess(fmt.Sprintf("✓ %s API key saved to ~/.config/aka/config.toml", provider))
 	return nil
 }
 
@@ -58,17 +92,20 @@ func runShowConfig(_ *cobra.Command, _ []string) error {
 	}
 
 	fmt.Println("AKA Configuration:")
+	fmt.Printf("  provider:       %s\n", cfg.Provider)
 	fmt.Printf("  model:          %s\n", cfg.Model)
-	fmt.Printf("  api_key_method: %s\n", cfg.APIKeyMethod)
 	fmt.Printf("  dry_run:        %v\n", cfg.DryRun)
 	fmt.Printf("  max_history:    %d\n", cfg.MaxHistory)
 
-	// Show whether an API key is configured (but not the key itself).
-	_, keyErr := config.GetAPIKey()
-	if keyErr == nil {
-		fmt.Println("  api_key:        [configured]")
+	if cfg.AnthropicAPIKey != "" {
+		fmt.Println("  anthropic_key:  [configured]")
 	} else {
-		fmt.Println("  api_key:        [not set — run `aka config set-key`]")
+		fmt.Println("  anthropic_key:  [not set — run `aka config set-key --provider anthropic`]")
+	}
+	if cfg.GroqAPIKey != "" {
+		fmt.Println("  groq_key:       [configured]")
+	} else {
+		fmt.Println("  groq_key:       [not set — run `aka config set-key --provider groq`]")
 	}
 	return nil
 }

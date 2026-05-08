@@ -27,7 +27,7 @@ The repo root is the Go module (`github.com/ntalmon/aka/aka-cli`).
 
 ```
 history.ReadAll → normalize.Normalize → censor.CensorAll → ui.ReviewCensored
-  → llm.AnthropicProvider.Suggest → ui.ReviewSuggestions → apply.Apply
+  → llm.Provider.Suggest → ui.ReviewSuggestions → apply.Apply
 ```
 
 Each step is a thin wrapper over its `internal/` package. The cobra subcommand in `internal/cli/analyze.go` wires them together.
@@ -42,8 +42,10 @@ Each step is a thin wrapper over its `internal/` package. The cobra subcommand i
 |---|---|
 | `aliases.sh` | The managed aliases/functions file; sourced by the user's shell |
 | `installed.json` | Source of truth — `InstalledEntry` records with metadata |
-| `config.toml` | User config (model, max_history, etc.) |
+| `config.toml` | User config — provider, model, API keys, max_history, dry_run |
 | `backups/` | Timestamped snapshots before every write |
+
+`config.toml` fields: `provider` ("anthropic" \| "groq"), `model`, `anthropic_api_key`, `groq_api_key`, `dry_run`, `max_history`. API keys are stored here in plaintext — no env vars or OS keychain involved.
 
 ### History entries (`internal/history/`)
 
@@ -59,17 +61,26 @@ Two sequential passes:
 
 Both passes are deterministic: candidates are sorted before assigning indices.
 
-### LLM integration (`internal/llm/anthropic.go`)
+### LLM integration (`internal/llm/`)
 
-Uses Anthropic tool use with `tool_choice: {type: "tool", name: "suggest_aliases"}` to force structured output. System prompt is sent with `cache_control: {type: "ephemeral"}` for prompt caching. Default model: `claude-haiku-4-5-20251001`.
+Two providers implement the `llm.Provider` interface (`Suggest(ctx, []history.Entry) ([]Suggestion, error)`):
+
+- **`anthropic.go`** — Anthropic Messages API with tool use (`tool_choice: {type: "tool", name: "suggest_aliases"}`) for structured output. System prompt is sent with `cache_control: {type: "ephemeral"}` for prompt caching. Default model: `claude-haiku-4-5-20251001`.
+- **`groq.go`** — Groq's OpenAI-compatible Chat Completions API with function calling. Default model: `llama-3.3-70b-versatile`.
+
+Both share the same system prompt (defined in `anthropic.go` as `systemPromptText`) and the same `toolOutput` / `Suggestion` types.
+
+`groq.go` returns `*ErrTokenLimit` (instead of a generic error) when Groq rejects the request for exceeding the TPM limit. `runAnalyze` in `analyze.go` catches this and retries with the censored slice halved, repeating until it fits or fewer than 10 entries remain.
 
 `Suggest` accepts `[]history.Entry`. `suggest.BuildPrompt` includes `[+Xs]`/`[+Xm]` time-delta columns when timestamps are non-zero, falling back to plain numbering otherwise. This lets the LLM identify workflow sessions (commands seconds apart).
 
 The system prompt instructs the LLM to return **at most 15 suggestions**, ranked by impact tier: multi-step workflow functions > long commands with variable parts > long verbatim commands > short conventional aliases.
 
-### API key lookup order
+Supported providers and their model lists live in `internal/llm/models.go` (`SupportedProviders`, `ModelsForProvider`). Add new providers there and implement the `Provider` interface.
 
-`config.GetAPIKey()` checks `ANTHROPIC_API_KEY` env var first, then the OS keychain (`99designs/keyring`, service `"aka"`). Always set the env var during development to avoid macOS keychain prompts.
+### First-run / key setup
+
+When `aka analyze` finds no API key in `config.toml`, it prompts: (1) choose provider, (2) enter API key. The provider's recommended default model is set automatically. `aka config set-key [--provider anthropic|groq]` does the same interactively at any time.
 
 ### v0.2 scope (not yet built)
 

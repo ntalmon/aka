@@ -5,6 +5,7 @@ import (
 	"context"
 
 	"github.com/ntalmon/aka/aka-cli/internal/aliases"
+	"github.com/ntalmon/aka/aka-cli/internal/history"
 )
 
 // Suggestion is a single alias or shell function suggested by the LLM.
@@ -17,7 +18,7 @@ type Suggestion struct {
 	ExampleUses []string        `json:"example_uses"`
 }
 
-// Provider can suggest aliases/functions from a list of censored commands.
+// Provider can suggest aliases/functions from a list of censored history entries.
 type Provider interface {
-	Suggest(ctx context.Context, censored []string) ([]Suggestion, error)
+	Suggest(ctx context.Context, censored []history.Entry) ([]Suggestion, error)
 }

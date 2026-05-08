@@ -58,7 +58,7 @@ func ReviewCensored(original, censored []history.Entry) (bool, error) {
 		}
 	}
 
-	fmt.Print(titleStyle.Render("Send the censored commands to the Anthropic API?") + " [y/N] ")
+	fmt.Print(titleStyle.Render("Send the censored commands to the LLM?") + " [y/N] ")
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Scan()
 	answer := strings.ToLower(strings.TrimSpace(scanner.Text()))
@@ -190,15 +190,60 @@ func printSuggestion(idx, total int, s llm.Suggestion) {
 	fmt.Println()
 }
 
-// PromptAPIKey prompts the user to enter their Anthropic API key.
-func PromptAPIKey() (string, error) {
+// PromptProvider lets the user pick an LLM provider.
+func PromptProvider() (string, error) {
+	opts := make([]huh.Option[string], len(llm.SupportedProviders))
+	for i, p := range llm.SupportedProviders {
+		opts[i] = huh.NewOption(p.Label, p.ID)
+	}
+	var selected string
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Choose an LLM provider:").
+				Options(opts...).
+				Value(&selected),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return "", err
+	}
+	return selected, nil
+}
+
+// PromptModel lets the user pick from the supported models for a provider.
+// Returns the selected model ID.
+func PromptModel(provider string) (string, error) {
+	models := llm.ModelsForProvider(provider)
+	opts := make([]huh.Option[string], len(models))
+	for i, m := range models {
+		opts[i] = huh.NewOption(m.Label, m.ID)
+	}
+	var selected string
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Choose a model:").
+				Options(opts...).
+				Value(&selected),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return "", err
+	}
+	return selected, nil
+}
+
+// PromptAPIKey prompts the user to enter an API key for the given provider.
+func PromptAPIKey(provider string) (string, error) {
+	title, desc := providerKeyPrompt(provider)
 	var key string
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
-				Title("Enter your Anthropic API key:").
-				Description("Get your key at https://console.anthropic.com/").
-				Password(true).
+				Title(title).
+				Description(desc).
+				EchoMode(huh.EchoModePassword).
 				Value(&key),
 		),
 	)
@@ -206,6 +251,15 @@ func PromptAPIKey() (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(key), nil
+}
+
+func providerKeyPrompt(provider string) (title, desc string) {
+	switch provider {
+	case "groq":
+		return "Enter your Groq API key:", "Get your key at https://console.groq.com/keys"
+	default:
+		return "Enter your Anthropic API key:", "Get your key at https://console.anthropic.com/"
+	}
 }
 
 // PrintError prints an error message to stderr.

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -62,21 +63,37 @@ func runAnalyze(cmd *cobra.Command, _ []string) error {
 
 	// Step 1: Check/get API key (unless dry-run).
 	var apiKey string
+	isGroq := cfg.Provider == "groq"
 	if !dryRun {
-		apiKey, err = config.GetAPIKey()
-		if err != nil {
-			fmt.Println("No API key found.")
-			apiKey, err = ui.PromptAPIKey()
+		if isGroq {
+			apiKey = cfg.GroqAPIKey
+		} else {
+			apiKey = cfg.AnthropicAPIKey
+		}
+		if apiKey == "" {
+			fmt.Println("No API key configured.")
+			provider, err := ui.PromptProvider()
+			if err != nil {
+				return fmt.Errorf("select provider: %w", err)
+			}
+			cfg.Provider = provider
+			isGroq = provider == "groq"
+			cfg.Model = llm.ModelsForProvider(provider)[0].ID
+
+			apiKey, err = ui.PromptAPIKey(provider)
 			if err != nil {
 				return fmt.Errorf("get API key: %w", err)
 			}
 			if apiKey == "" {
 				return fmt.Errorf("API key required")
 			}
-			// Offer to save.
-			if saveErr := config.SetAPIKey(apiKey); saveErr != nil {
-				fmt.Printf("Warning: could not save API key to keyring: %v\n", saveErr)
-				fmt.Println("Set AKA_API_KEY env var to persist.")
+			if isGroq {
+				cfg.GroqAPIKey = apiKey
+			} else {
+				cfg.AnthropicAPIKey = apiKey
+			}
+			if saveErr := config.Save(cfg); saveErr != nil {
+				fmt.Printf("Warning: could not save config: %v\n", saveErr)
 			}
 		}
 	}
@@ -154,9 +171,28 @@ func runAnalyze(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Step 7: Call LLM.
-	fmt.Println("\nCalling Anthropic API...")
-	provider := llm.New(apiKey).WithModel(cfg.Model)
+	var provider llm.Provider
+	if isGroq {
+		model := cfg.Model
+		if model == "claude-haiku-4-5-20251001" {
+			model = llm.DefaultGroqModel
+		}
+		fmt.Printf("\nCalling Groq API (%s)...\n", model)
+		provider = llm.NewGroq(apiKey).WithModel(model)
+	} else {
+		fmt.Printf("\nCalling Anthropic API (%s)...\n", cfg.Model)
+		provider = llm.New(apiKey).WithModel(cfg.Model)
+	}
 	suggestions, err := provider.Suggest(context.Background(), censored)
+	for {
+		var tokenErr *llm.ErrTokenLimit
+		if !errors.As(err, &tokenErr) || len(censored) <= 10 {
+			break
+		}
+		censored = censored[len(censored)/2:]
+		fmt.Printf("  Token limit exceeded; retrying with %d most recent commands...\n", len(censored))
+		suggestions, err = provider.Suggest(context.Background(), censored)
+	}
 	if err != nil {
 		return fmt.Errorf("LLM suggest: %w", err)
 	}
