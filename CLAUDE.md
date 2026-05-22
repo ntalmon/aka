@@ -92,6 +92,21 @@ Supported providers and their model lists live in `internal/llm/models.go` (`Sup
 
 When `aka scan` finds no API key in `config.toml`, it prompts: (1) choose provider, (2) enter API key. The provider's recommended default model is set automatically. `aka config set-key [--provider anthropic|groq]` does the same interactively at any time.
 
+## Local pre-push checks
+
+[lefthook](https://github.com/evilmartians/lefthook) runs `gofmt`, `go vet`, `golangci-lint`, and `govulncheck` automatically before every `git push`. Tests are skipped in the hook (too slow) and remain CI-only.
+
+First-time setup after cloning:
+```bash
+go install github.com/evilmartians/lefthook@latest
+lefthook install
+```
+
+To run the checks manually without pushing:
+```bash
+lefthook run pre-push
+```
+
 ## Branching and parallel work
 
 Use **trunk-based development**: feature branches → PR → `main`. There is no long-lived `dev` branch.

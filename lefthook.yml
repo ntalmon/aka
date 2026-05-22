@@ -1,0 +1,21 @@
+pre-push:
+  commands:
+    gofmt:
+      run: |
+        files=$(gofmt -l .)
+        if [ -n "$files" ]; then
+          echo "gofmt: unformatted files:"
+          echo "$files"
+          exit 1
+        fi
+
+    go-vet:
+      run: go vet ./...
+
+    golangci-lint:
+      run: golangci-lint run --timeout=5m
+
+    govulncheck:
+      run: |
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        govulncheck ./...
