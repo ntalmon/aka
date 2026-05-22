@@ -8,7 +8,7 @@ AKA (`aka`) reads your shell history, censors sensitive data locally, and uses t
 go install github.com/ntalmon/aka/aka-cli/cmd/aka@latest
 aka init          # one-time setup: creates aliases.sh, adds source line to .zshrc/.bashrc
 aka config set-key  # store your Anthropic API key in the OS keyring
-aka analyze       # analyze history, review censored diff, get and accept suggestions
+aka scan          # scan history, review censored diff, get and accept suggestions
 aka list          # see installed aliases and functions
 aka undo          # revert the last change
 ```

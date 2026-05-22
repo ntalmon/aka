@@ -100,7 +100,7 @@ func TestLoadSaveInstalled(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	entries := []InstalledEntry{
-		{Name: "gst", Kind: "alias", Template: "git status", Source: "analyze", CreatedAt: time.Now()},
+		{Name: "gst", Kind: "alias", Template: "git status", Source: "scan", CreatedAt: time.Now()},
 	}
 	if err := SaveInstalled(entries); err != nil {
 		t.Fatal(err)

@@ -26,7 +26,7 @@ func runList(_ *cobra.Command, _ []string) error {
 	}
 
 	if len(entries) == 0 {
-		fmt.Println("No aliases installed yet. Run `aka analyze` to get started.")
+		fmt.Println("No aliases installed yet. Run `aka scan` to get started.")
 		return nil
 	}
 

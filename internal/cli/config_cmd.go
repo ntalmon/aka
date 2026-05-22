@@ -83,7 +83,7 @@ func newSetMaxHistoryCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "set-max-history <count>",
 		Short: "Set the max_history limit",
-		Long:  "Set max_history, the maximum number of normalized shell history entries sent to the LLM during aka analyze.",
+		Long:  "Set max_history, the maximum number of normalized shell history entries sent to the LLM during aka scan.",
 		Args:  cobra.ExactArgs(1),
 		RunE:  runSetMaxHistory,
 	}

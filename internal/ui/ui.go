@@ -372,7 +372,7 @@ func ChooseHistoryMode(newCount, totalCount int) (string, error) {
 	title := fmt.Sprintf("Only %d new command(s) since last run.", newCount)
 	if newCount >= 50 {
 		opts = append([]huh.Option[string]{
-			huh.NewOption(fmt.Sprintf("Analyze %d new command(s) only", newCount), "new"),
+			huh.NewOption(fmt.Sprintf("Scan %d new command(s) only", newCount), "new"),
 		}, opts...)
 		title = fmt.Sprintf("Only %d new command(s) since last run — not many to work with.", newCount)
 	}

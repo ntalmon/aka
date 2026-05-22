@@ -1,4 +1,4 @@
-// Command aka is the AKA CLI — shell history analyzer and alias manager.
+// Command aka is the AKA CLI — shell history scanner and alias manager.
 package main
 
 import (
@@ -23,13 +23,13 @@ func main() {
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "aka",
-		Short: "AKA — shell history analyzer and alias manager",
+		Short: "AKA — shell history scanner and alias manager",
 		Long: `AKA (also-known-as) reads your shell history, censors sensitive data,
 and uses the Anthropic API to suggest useful shell aliases and functions.
 
 Get started:
   aka init       # one-time setup
-  aka analyze    # analyze history and get suggestions
+  aka scan       # scan history and get suggestions
   aka list       # see installed aliases
   aka undo       # revert last change`,
 		Version: version,
@@ -42,7 +42,7 @@ Get started:
 	root.PersistentFlags().Bool("dry-run", false, "Prevent all network calls; print what would be sent")
 
 	root.AddCommand(cli.NewInitCmd())
-	root.AddCommand(cli.NewAnalyzeCmd())
+	root.AddCommand(cli.NewScanCmd())
 	root.AddCommand(cli.NewListCmd())
 	root.AddCommand(cli.NewUndoCmd())
 	root.AddCommand(cli.NewConfigCmd())

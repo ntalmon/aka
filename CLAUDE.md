@@ -25,14 +25,14 @@ After every Go file edit, run `gofmt -w <file>` to format and `go build ./cmd/ak
 
 The repo root is the Go module (`github.com/ntalmon/aka/aka-cli`).
 
-### Data flow for `aka analyze`
+### Data flow for `aka scan`
 
 ```
 history.ReadAll → normalize.Normalize → censor.CensorAll → ui.ReviewCensored
   → llm.Provider.Suggest → ui.ReviewSuggestions → apply.Apply
 ```
 
-Each step is a thin wrapper over its `internal/` package. The cobra subcommand in `internal/cli/analyze.go` wires them together.
+Each step is a thin wrapper over its `internal/` package. The cobra subcommand in `internal/cli/scan.go` wires them together.
 
 ### Key invariant: `aliases.sh` is never appended to
 
@@ -51,7 +51,7 @@ Each step is a thin wrapper over its `internal/` package. The cobra subcommand i
 
 `max_history` (default 500) caps how many normalized entries are sent to the LLM. When the normalized count exceeds the limit, `ui.ChooseMaxHistory` prompts the user to continue with the current limit, send all entries for this run, or change the limit permanently (saved back to `config.toml`).
 
-History cursor behavior: `minNewEntries` (100) is the threshold below which `ui.ChooseHistoryMode` is shown instead of auto-sending the diff. Within that prompt, the "analyze new commands only" option is shown only when `newCount >= 50` — below 50 the user can only choose full history or abort.
+History cursor behavior: `minNewEntries` (100) is the threshold below which `ui.ChooseHistoryMode` is shown instead of auto-sending the diff. Within that prompt, the "scan new commands only" option is shown only when `newCount >= 50` — below 50 the user can only choose full history or abort.
 
 ### History entries (`internal/history/`)
 
@@ -78,7 +78,7 @@ Two providers implement the `llm.Provider` interface (`Suggest(ctx, []history.En
 
 Both share the same system prompt (defined in `anthropic.go` as `systemPromptText`) and the same `toolOutput` / `Suggestion` types.
 
-`groq.go` returns `*ErrTokenLimit` (instead of a generic error) when Groq rejects the request for exceeding the TPM limit. `runAnalyze` in `analyze.go` catches this and retries with the censored slice halved, repeating until it fits or fewer than 10 entries remain.
+`groq.go` returns `*ErrTokenLimit` (instead of a generic error) when Groq rejects the request for exceeding the TPM limit. `runScan` in `scan.go` catches this and retries with the censored slice halved, repeating until it fits or fewer than 10 entries remain.
 
 `Suggest` accepts `[]history.Entry`. `suggest.BuildPrompt` includes `[+Xs]`/`[+Xm]` time-delta columns when timestamps are non-zero, falling back to plain numbering otherwise. This lets the LLM identify workflow sessions (commands seconds apart).
 
@@ -90,7 +90,7 @@ Supported providers and their model lists live in `internal/llm/models.go` (`Sup
 
 ### First-run / key setup
 
-When `aka analyze` finds no API key in `config.toml`, it prompts: (1) choose provider, (2) enter API key. The provider's recommended default model is set automatically. `aka config set-key [--provider anthropic|groq]` does the same interactively at any time.
+When `aka scan` finds no API key in `config.toml`, it prompts: (1) choose provider, (2) enter API key. The provider's recommended default model is set automatically. `aka config set-key [--provider anthropic|groq]` does the same interactively at any time.
 
 ## Lessons learned
 

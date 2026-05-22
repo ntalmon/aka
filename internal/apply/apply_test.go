@@ -51,7 +51,7 @@ func TestApplySkipsInstalledNameConflict(t *testing.T) {
 	setTempHome(t)
 
 	existing := []aliases.InstalledEntry{
-		{Name: "gst", Kind: "alias", Template: "git status", CreatedAt: time.Now(), Source: "analyze"},
+		{Name: "gst", Kind: "alias", Template: "git status", CreatedAt: time.Now(), Source: "scan"},
 	}
 	if err := aliases.SaveInstalled(existing); err != nil {
 		t.Fatalf("SaveInstalled: %v", err)
@@ -117,7 +117,7 @@ func TestApplyWritesAliasesFile(t *testing.T) {
 	}
 }
 
-func TestApplySetsSourceToAnalyze(t *testing.T) {
+func TestApplySetsSourceToScan(t *testing.T) {
 	setTempHome(t)
 
 	suggestions := []llm.Suggestion{
@@ -130,8 +130,8 @@ func TestApplySetsSourceToAnalyze(t *testing.T) {
 	if len(installed) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(installed))
 	}
-	if installed[0].Source != "analyze" {
-		t.Errorf("expected source='analyze', got %q", installed[0].Source)
+	if installed[0].Source != "scan" {
+		t.Errorf("expected source='scan', got %q", installed[0].Source)
 	}
 }
 

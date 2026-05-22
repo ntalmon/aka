@@ -21,25 +21,25 @@ import (
 	"github.com/ntalmon/aka/aka-cli/internal/ui"
 )
 
-// NewAnalyzeCmd creates the `aka analyze` subcommand.
-func NewAnalyzeCmd() *cobra.Command {
+// NewScanCmd creates the `aka scan` subcommand.
+func NewScanCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "analyze",
-		Short: "Analyze shell history and suggest aliases/functions",
-		Long: `aka analyze reads your shell history, censors sensitive data, and calls
+		Use:   "scan",
+		Short: "Scan shell history and suggest aliases/functions",
+		Long: `aka scan reads your shell history, censors sensitive data, and calls
 the Anthropic API to suggest useful shell aliases and functions.`,
-		RunE: runAnalyze,
+		RunE: runScan,
 	}
 	cmd.Flags().Bool("dry-run", false, "Print the censored request body and exit without making an API call")
 	cmd.Flags().Int("history", 0, "Max number of history entries to use (0 = use config default)")
-	cmd.Flags().Bool("full-history", false, "Ignore the history cursor and analyze the full history")
+	cmd.Flags().Bool("full-history", false, "Ignore the history cursor and scan the full history")
 	return cmd
 }
 
 // minNewEntries is the threshold below which the user is warned and asked how to proceed.
 const minNewEntries = 100
 
-func runAnalyze(cmd *cobra.Command, _ []string) error {
+func runScan(cmd *cobra.Command, _ []string) error {
 	ui.PrintBanner()
 
 	dryRun, _ := cmd.Flags().GetBool("dry-run")

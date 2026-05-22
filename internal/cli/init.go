@@ -70,7 +70,7 @@ func runInit(_ *cobra.Command, _ []string) error {
 		fmt.Printf("  Completion:   %s\n", completionPath)
 	}
 	fmt.Printf("  Source line added to: %s\n", rcFile)
-	fmt.Println("\nRun `aka analyze` to generate your first aliases.")
+	fmt.Println("\nRun `aka scan` to generate your first aliases.")
 	fmt.Printf("Then reload your shell: source %s\n", rcFile)
 	return nil
 }

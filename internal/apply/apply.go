@@ -64,7 +64,7 @@ func Apply(newSuggestions []llm.Suggestion) (skipped []string, err error) {
 			Template:  s.Template,
 			Params:    s.Params,
 			CreatedAt: now,
-			Source:    "analyze",
+			Source:    "scan",
 		}
 		existing = append(existing, entry)
 		installedNames[s.Name] = true

@@ -28,7 +28,7 @@ type InstalledEntry struct {
 	CreatedAt   time.Time `json:"created_at"`
 	LastUsedAt  time.Time `json:"last_used_at,omitempty"`
 	UseCount30d int       `json:"use_count_30d"`
-	Source      string    `json:"source"` // "analyze" | "manual"
+	Source      string    `json:"source"` // "scan" | "manual"
 }
 
 // configDir returns ~/.config/aka, creating it if needed.
@@ -138,11 +138,11 @@ func Init(rcFile string) error {
 	defer f.Close()
 
 	if !hasWrapper {
-		wrapper := "\n" + wrapperMarker + " — auto-reloads aliases after 'aka analyze'\n" +
+		wrapper := "\n" + wrapperMarker + " — auto-reloads aliases after 'aka scan'\n" +
 			"aka() {\n" +
 			"    command aka \"$@\"\n" +
 			"    local _exit_code=$?\n" +
-			"    if [[ \"$1\" == \"analyze\" ]] && [[ $_exit_code -eq 0 ]]; then\n" +
+			"    if [[ \"$1\" == \"scan\" ]] && [[ $_exit_code -eq 0 ]]; then\n" +
 			"        . \"$HOME/.config/aka/aliases.sh\" 2>/dev/null\n" +
 			"    fi\n" +
 			"    return $_exit_code\n" +
@@ -186,7 +186,7 @@ _aka_completion() {
   local prev="${words[$((${#words}-1))]}"
 
   # Top-level subcommands
-  local subcommands=(analyze init list undo config completion help)
+  local subcommands=(scan init list undo config completion help)
 
   if [[ ${#words[@]} -eq 2 ]]; then
     completions=(${subcommands})
@@ -195,7 +195,7 @@ _aka_completion() {
       config)
         completions=(set-key set-max-history show)
         ;;
-      analyze)
+      scan)
         completions=(--dry-run --history --full-history)
         ;;
     esac
@@ -214,7 +214,7 @@ _aka_completion() {
   local cur prev subcommands
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  subcommands="analyze init list undo config completion help"
+  subcommands="scan init list undo config completion help"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "${subcommands}" -- "${cur}") )
@@ -223,7 +223,7 @@ _aka_completion() {
       config)
         COMPREPLY=( $(compgen -W "set-key set-max-history show" -- "${cur}") )
         ;;
-      analyze)
+      scan)
         COMPREPLY=( $(compgen -W "--dry-run --history --full-history" -- "${cur}") )
         ;;
       *)
