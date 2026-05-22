@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ntalmon/aka/aka-cli/internal/aliases"
 	"github.com/ntalmon/aka/aka-cli/internal/apply"
 	"github.com/ntalmon/aka/aka-cli/internal/censor"
 	"github.com/ntalmon/aka/aka-cli/internal/config"
@@ -36,7 +37,7 @@ the Anthropic API to suggest useful shell aliases and functions.`,
 }
 
 // minNewEntries is the threshold below which the user is warned and asked how to proceed.
-const minNewEntries = 20
+const minNewEntries = 100
 
 func runAnalyze(cmd *cobra.Command, _ []string) error {
 	ui.PrintBanner()
@@ -63,36 +64,28 @@ func runAnalyze(cmd *cobra.Command, _ []string) error {
 		maxHistory = historyN
 	}
 
-	// Step 1: Check/get API key (unless dry-run).
+	// Step 1: Check/get API key (unless dry-run; Ollama needs no key).
 	var apiKey string
-	isGroq := cfg.Provider == "groq"
 	if !dryRun {
-		if isGroq {
-			apiKey = cfg.GroqAPIKey
-		} else {
-			apiKey = cfg.AnthropicAPIKey
-		}
-		if apiKey == "" {
+		apiKey = apiKeyForProvider(cfg)
+		if apiKey == "" && cfg.Provider != "ollama" {
 			fmt.Println("No API key configured.")
-			provider, err := ui.PromptProvider()
+			chosenProvider, err := ui.PromptProvider()
 			if err != nil {
 				return fmt.Errorf("select provider: %w", err)
 			}
-			cfg.Provider = provider
-			isGroq = provider == "groq"
-			cfg.Model = llm.ModelsForProvider(provider)[0].ID
+			cfg.Provider = chosenProvider
+			cfg.Model = llm.ModelsForProvider(chosenProvider)[0].ID
 
-			apiKey, err = ui.PromptAPIKey(provider)
-			if err != nil {
-				return fmt.Errorf("get API key: %w", err)
-			}
-			if apiKey == "" {
-				return fmt.Errorf("API key required")
-			}
-			if isGroq {
-				cfg.GroqAPIKey = apiKey
-			} else {
-				cfg.AnthropicAPIKey = apiKey
+			if chosenProvider != "ollama" {
+				apiKey, err = ui.PromptAPIKey(chosenProvider)
+				if err != nil {
+					return fmt.Errorf("get API key: %w", err)
+				}
+				if apiKey == "" {
+					return fmt.Errorf("API key required")
+				}
+				setAPIKeyForProvider(cfg, chosenProvider, apiKey)
 			}
 			if saveErr := config.Save(cfg); saveErr != nil {
 				fmt.Printf("Warning: could not save config: %v\n", saveErr)
@@ -102,6 +95,9 @@ func runAnalyze(cmd *cobra.Command, _ []string) error {
 
 	// Step 2: Read history.
 	fmt.Println("Reading shell history...")
+	if historyN > 0 {
+		fmt.Printf("  Custom limit: %d (--history flag)\n", historyN)
+	}
 	shellEnv := os.Getenv("SHELL")
 	shellName := detectShellName(shellEnv)
 	entries, err := history.ReadAll(shellName)
@@ -174,11 +170,11 @@ func runAnalyze(cmd *cobra.Command, _ []string) error {
 
 	// Step 5: Show censored diff and ask for confirmation (skip in dry-run).
 	if !dryRun {
-		confirmed, err := ui.ReviewCensored(normalized, censored)
+		censored, err = ui.ReviewCensored(normalized, censored)
 		if err != nil {
 			return fmt.Errorf("censor review: %w", err)
 		}
-		if !confirmed {
+		if censored == nil {
 			fmt.Println("Aborted — no data sent.")
 			return nil
 		}
@@ -190,18 +186,7 @@ func runAnalyze(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Step 7: Call LLM.
-	var provider llm.Provider
-	if isGroq {
-		model := cfg.Model
-		if model == "claude-haiku-4-5-20251001" {
-			model = llm.DefaultGroqModel
-		}
-		fmt.Printf("\nCalling Groq API (%s)...\n", model)
-		provider = llm.NewGroq(apiKey).WithModel(model)
-	} else {
-		fmt.Printf("\nCalling Anthropic API (%s)...\n", cfg.Model)
-		provider = llm.New(apiKey).WithModel(cfg.Model)
-	}
+	provider := buildProvider(cfg, apiKey)
 	suggestions, err := provider.Suggest(context.Background(), censored)
 	for {
 		var tokenErr *llm.ErrTokenLimit
@@ -216,6 +201,13 @@ func runAnalyze(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("LLM suggest: %w", err)
 	}
 	fmt.Printf("  Got %d suggestion(s)\n", len(suggestions))
+
+	// Filter out suggestions whose names already exist in installed aliases or shell config files.
+	suggestions = filterExistingSuggestions(suggestions)
+	if len(suggestions) == 0 {
+		fmt.Println("All suggestions already exist as aliases or functions — nothing new to apply.")
+		return nil
+	}
 
 	// Persist cursor so the next run only processes new commands.
 	if !fullHistory {
@@ -246,8 +238,34 @@ func runAnalyze(cmd *cobra.Command, _ []string) error {
 	aliasesPath, _ := config.GetAliasesPath()
 	ui.PrintSuccess(fmt.Sprintf("\n✓ Applied %d alias(es)/function(s)!", len(accepted)-len(skipped)))
 	fmt.Printf("  Written to: %s\n", aliasesPath)
-	fmt.Println("  Reload your shell or run: source ~/.config/aka/aliases.sh")
+	fmt.Println("  Aliases reloaded in current shell (or run: source ~/.config/aka/aliases.sh)")
 	return nil
+}
+
+func filterExistingSuggestions(suggestions []llm.Suggestion) []llm.Suggestion {
+	installed, _ := aliases.LoadInstalled()
+	known := make(map[string]bool, len(installed))
+	for _, e := range installed {
+		known[e.Name] = true
+	}
+	for name := range aliases.LoadShellDefinedNames() {
+		known[name] = true
+	}
+
+	filtered := suggestions[:0]
+	var skipped []string
+	for _, s := range suggestions {
+		if known[s.Name] {
+			skipped = append(skipped, s.Name)
+			continue
+		}
+		filtered = append(filtered, s)
+		known[s.Name] = true // deduplicate within the suggestion list itself
+	}
+	if len(skipped) > 0 {
+		fmt.Printf("  Filtered %d already-defined: %s\n", len(skipped), strings.Join(skipped, ", "))
+	}
+	return filtered
 }
 
 func detectShellName(shellPath string) string {
@@ -258,6 +276,58 @@ func detectShellName(shellPath string) string {
 		return "bash"
 	default:
 		return ""
+	}
+}
+
+func apiKeyForProvider(cfg *config.Config) string {
+	switch cfg.Provider {
+	case "groq":
+		return cfg.GroqAPIKey
+	case "openai":
+		return cfg.OpenAIAPIKey
+	case "gemini":
+		return cfg.GeminiAPIKey
+	case "ollama":
+		return "" // no key required
+	default: // anthropic
+		return cfg.AnthropicAPIKey
+	}
+}
+
+func setAPIKeyForProvider(cfg *config.Config, provider, key string) {
+	switch provider {
+	case "groq":
+		cfg.GroqAPIKey = key
+	case "openai":
+		cfg.OpenAIAPIKey = key
+	case "gemini":
+		cfg.GeminiAPIKey = key
+	default: // anthropic
+		cfg.AnthropicAPIKey = key
+	}
+}
+
+func buildProvider(cfg *config.Config, apiKey string) llm.Provider {
+	model := cfg.Model
+	switch cfg.Provider {
+	case "groq":
+		if model == "claude-haiku-4-5-20251001" {
+			model = llm.DefaultGroqModel
+		}
+		fmt.Printf("\nCalling Groq API (%s)...\n", model)
+		return llm.NewGroq(apiKey).WithModel(model)
+	case "openai":
+		fmt.Printf("\nCalling OpenAI API (%s)...\n", model)
+		return llm.NewOpenAI(apiKey).WithModel(model)
+	case "gemini":
+		fmt.Printf("\nCalling Google Gemini API (%s)...\n", model)
+		return llm.NewGemini(apiKey).WithModel(model)
+	case "ollama":
+		fmt.Printf("\nCalling Ollama (%s)...\n", model)
+		return llm.NewOllama(model)
+	default: // anthropic
+		fmt.Printf("\nCalling Anthropic API (%s)...\n", model)
+		return llm.New(apiKey).WithModel(model)
 	}
 }
 

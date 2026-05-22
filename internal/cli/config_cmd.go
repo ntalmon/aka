@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -17,6 +18,7 @@ func NewConfigCmd() *cobra.Command {
 		Short: "Manage AKA configuration",
 	}
 	cmd.AddCommand(newSetKeyCmd())
+	cmd.AddCommand(newSetMaxHistoryCmd())
 	cmd.AddCommand(newShowConfigCmd())
 	return cmd
 }
@@ -74,6 +76,36 @@ func runSetKey(cmd *cobra.Command, _ []string) error {
 	}
 
 	ui.PrintSuccess(fmt.Sprintf("✓ %s API key saved to ~/.config/aka/config.toml", provider))
+	return nil
+}
+
+func newSetMaxHistoryCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "set-max-history <count>",
+		Short: "Set the max_history limit",
+		Long:  "Set max_history, the maximum number of normalized shell history entries sent to the LLM during aka analyze.",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runSetMaxHistory,
+	}
+}
+
+func runSetMaxHistory(_ *cobra.Command, args []string) error {
+	limit, err := strconv.Atoi(args[0])
+	if err != nil || limit <= 0 {
+		return fmt.Errorf("invalid max_history %q: must be a positive integer", args[0])
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	cfg.MaxHistory = limit
+	if err := config.Save(cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	ui.PrintSuccess(fmt.Sprintf("✓ max_history set to %d", limit))
 	return nil
 }
 

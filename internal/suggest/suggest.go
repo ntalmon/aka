@@ -82,7 +82,7 @@ var paramSchema = map[string]interface{}{
 			"description": "Human-readable description of what this parameter represents",
 		},
 	},
-	"required": []string{"name", "type", "description"},
+	"required": []string{"name", "type"},
 }
 
 // suggestionSchema defines the JSON schema for a single suggestion.

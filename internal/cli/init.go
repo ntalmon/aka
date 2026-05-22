@@ -47,8 +47,28 @@ func runInit(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// Ask whether to set up tab-completion.
+	enableCompletion, err := ui.PromptEnableCompletion()
+	if err != nil {
+		return fmt.Errorf("completion prompt: %w", err)
+	}
+
+	var completionPath string
+	if enableCompletion {
+		if err := aliases.InitCompletion(shell, rcFile); err != nil {
+			return fmt.Errorf("init completion: %w", err)
+		}
+		completionPath, err = aliases.CompletionFilePath()
+		if err != nil {
+			return err
+		}
+	}
+
 	ui.PrintSuccess("✓ AKA initialized!")
 	fmt.Printf("  Aliases file: %s\n", aliasesPath)
+	if completionPath != "" {
+		fmt.Printf("  Completion:   %s\n", completionPath)
+	}
 	fmt.Printf("  Source line added to: %s\n", rcFile)
 	fmt.Println("\nRun `aka analyze` to generate your first aliases.")
 	fmt.Printf("Then reload your shell: source %s\n", rcFile)

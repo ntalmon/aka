@@ -65,12 +65,13 @@ func TestWriteAliasesFileSortedAndDeterministic(t *testing.T) {
 	}
 	content := string(data)
 
-	// abar should come before mfunc, mfunc before zfoo.
+	// Aliases section (abar, zfoo) should precede the functions section (mfunc).
+	// Within the aliases section, abar < zfoo alphabetically.
 	iAbar := strings.Index(content, "abar")
 	iMfunc := strings.Index(content, "mfunc")
 	iZfoo := strings.Index(content, "zfoo")
-	if !(iAbar < iMfunc && iMfunc < iZfoo) {
-		t.Errorf("entries not sorted: abar=%d mfunc=%d zfoo=%d", iAbar, iMfunc, iZfoo)
+	if !(iAbar < iZfoo && iZfoo < iMfunc) {
+		t.Errorf("unexpected section order: abar=%d zfoo=%d mfunc=%d", iAbar, iZfoo, iMfunc)
 	}
 
 	// Write again — should be same content (modulo timestamp).

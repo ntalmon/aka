@@ -2,9 +2,9 @@
 package ui
 
 import (
-	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -41,9 +41,43 @@ func PrintBanner() {
 	fmt.Println(mutedStyle.Render("  also known as · your shell alias coach\n"))
 }
 
-// ReviewCensored renders a diff of original vs censored commands and asks the user to confirm.
-// Returns true if the user accepts the censored version.
-func ReviewCensored(original, censored []history.Entry) (bool, error) {
+// ReviewCensored renders a diff of original vs censored commands and asks the user how to proceed.
+// Returns the entries to send (possibly edited), or nil if the user aborted.
+func ReviewCensored(original, censored []history.Entry) ([]history.Entry, error) {
+	printCensorDiff(original, censored)
+
+	const (
+		optSend  = "send"
+		optEdit  = "edit"
+		optAbort = "abort"
+	)
+	var choice string
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(fmt.Sprintf("Send %d commands to the LLM?", len(censored))).
+				Options(
+					huh.NewOption(fmt.Sprintf("Yes, send %d commands", len(censored)), optSend),
+					huh.NewOption("Edit censored commands manually first", optEdit),
+					huh.NewOption("No, abort", optAbort),
+				).
+				Value(&choice),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return nil, err
+	}
+	switch choice {
+	case optAbort:
+		return nil, nil
+	case optEdit:
+		return editEntriesInEditor(censored)
+	default:
+		return censored, nil
+	}
+}
+
+func printCensorDiff(original, censored []history.Entry) {
 	origText := joinCommands(original)
 	censoredText := joinCommands(censored)
 
@@ -57,7 +91,6 @@ func ReviewCensored(original, censored []history.Entry) (bool, error) {
 	if diff == "" {
 		fmt.Println(successStyle.Render("No sensitive data detected — commands will be sent as-is."))
 	} else {
-		// Print with color.
 		for _, line := range strings.Split(diff, "\n") {
 			switch {
 			case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
@@ -71,12 +104,45 @@ func ReviewCensored(original, censored []history.Entry) (bool, error) {
 			}
 		}
 	}
+}
 
-	fmt.Print(titleStyle.Render(fmt.Sprintf("Send %d commands to the LLM?", len(censored))) + " [y/N] ")
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Scan()
-	answer := strings.ToLower(strings.TrimSpace(scanner.Text()))
-	return answer == "y" || answer == "yes", nil
+func editEntriesInEditor(entries []history.Entry) ([]history.Entry, error) {
+	f, err := os.CreateTemp("", "aka-censor-*.txt")
+	if err != nil {
+		return nil, fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := f.Name()
+	defer os.Remove(tmpPath)
+
+	for _, e := range entries {
+		fmt.Fprintln(f, e.Command)
+	}
+	f.Close()
+
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vi"
+	}
+	cmd := exec.Command(editor, tmpPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("editor: %w", err)
+	}
+
+	data, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return nil, fmt.Errorf("read edited file: %w", err)
+	}
+
+	var result []history.Entry
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) != "" {
+			result = append(result, history.Entry{Command: line})
+		}
+	}
+	return result, nil
 }
 
 const pageSize = 5
@@ -268,6 +334,23 @@ func providerKeyPrompt(provider string) (title, desc string) {
 	}
 }
 
+// PromptEnableCompletion asks the user whether to install tab-completion for `aka`.
+func PromptEnableCompletion() (bool, error) {
+	enable := true
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Enable tab-completion for `aka`?").
+				Description("Writes ~/.config/aka/completion.sh and sources it from your rc file.").
+				Value(&enable),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return false, err
+	}
+	return enable, nil
+}
+
 // PrintError prints an error message to stderr.
 func PrintError(msg string) {
 	fmt.Fprintln(os.Stderr, removeStyle.Render("Error: "+msg))
@@ -287,7 +370,7 @@ func ChooseHistoryMode(newCount, totalCount int) (string, error) {
 		huh.NewOption("Abort", "abort"),
 	}
 	title := fmt.Sprintf("Only %d new command(s) since last run.", newCount)
-	if newCount > 0 {
+	if newCount >= 50 {
 		opts = append([]huh.Option[string]{
 			huh.NewOption(fmt.Sprintf("Analyze %d new command(s) only", newCount), "new"),
 		}, opts...)

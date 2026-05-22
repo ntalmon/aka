@@ -37,6 +37,7 @@ Get started:
 
 	root.SilenceErrors = true
 	root.SilenceUsage = true
+	root.CompletionOptions.DisableDefaultCmd = true
 
 	root.PersistentFlags().Bool("dry-run", false, "Prevent all network calls; print what would be sent")
 
