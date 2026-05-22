@@ -6,7 +6,7 @@ require (
 	github.com/charmbracelet/huh v0.6.0
 	github.com/charmbracelet/lipgloss v1.0.0
 	github.com/hexops/gotextdiff v1.0.3
-	github.com/pelletier/go-toml/v2 v2.2.2
+	github.com/pelletier/go-toml/v2 v2.3.1
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/viper v1.19.0
 )
