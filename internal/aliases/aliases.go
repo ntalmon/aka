@@ -31,14 +31,18 @@ type InstalledEntry struct {
 	Source      string    `json:"source"` // "scan" | "manual"
 }
 
-// configDir returns ~/.config/aka, creating it if needed.
+// configDir returns ~/.config/aka, creating it if needed with 0700 permissions.
 func configDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 	dir := filepath.Join(home, ".config", "aka")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	// Tighten permissions even if the directory already existed.
+	if err := os.Chmod(dir, 0o700); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -78,10 +82,64 @@ func BackupDir() (string, error) {
 		return "", err
 	}
 	bd := filepath.Join(dir, "backups")
-	if err := os.MkdirAll(bd, 0o755); err != nil {
+	if err := os.MkdirAll(bd, 0o700); err != nil {
 		return "", err
 	}
 	return bd, nil
+}
+
+// checkNotSymlink returns an error if path exists and is a symlink, preventing
+// TOCTOU attacks where an attacker pre-places a symlink to redirect writes.
+func checkNotSymlink(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink — refusing to overwrite", path)
+	}
+	return nil
+}
+
+// atomicWriteFile writes data to path atomically via a temp-file rename and
+// refuses to write if path is already a symlink.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	if err := checkNotSymlink(path); err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".aka-tmp-")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+// ValidateFunctionTemplate returns an error if the template contains a
+// line-leading '}' that would close the enclosing shell function body early.
+func ValidateFunctionTemplate(template string) error {
+	for line := range strings.SplitSeq(template, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "}") {
+			return fmt.Errorf("template contains '}' that would escape the function body")
+		}
+	}
+	return nil
 }
 
 // Init creates the aliases file and appends the source line to rcFile idempotently.
@@ -97,7 +155,7 @@ func Init(rcFile string) error {
 	if _, err := os.Stat(aliasesPath); os.IsNotExist(err) {
 		header := "# Managed by AKA (https://github.com/ntalmon/aka) — do not edit manually\n" +
 			"# Last updated: " + time.Now().Format(time.RFC3339) + "\n"
-		if err := os.WriteFile(aliasesPath, []byte(header), 0o644); err != nil {
+		if err := atomicWriteFile(aliasesPath, []byte(header), 0o600); err != nil {
 			return fmt.Errorf("create aliases.sh: %w", err)
 		}
 	}
@@ -126,7 +184,7 @@ func Init(rcFile string) error {
 	}
 	backupName := filepath.Base(rcFile) + "." + fmt.Sprintf("%d", time.Now().Unix())
 	if len(data) > 0 {
-		if err := os.WriteFile(filepath.Join(bd, backupName), data, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(bd, backupName), data, 0o600); err != nil {
 			return fmt.Errorf("backup rc file: %w", err)
 		}
 	}
@@ -135,7 +193,7 @@ func Init(rcFile string) error {
 	if err != nil {
 		return fmt.Errorf("open rc file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if !hasWrapper {
 		wrapper := "\n" + wrapperMarker + " — auto-reloads aliases after 'aka scan'\n" +
@@ -239,7 +297,7 @@ complete -F _aka_completion aka
 		return fmt.Errorf("unsupported shell %q for completion", shell)
 	}
 
-	if err := os.WriteFile(completionPath, []byte(script), 0o644); err != nil {
+	if err := atomicWriteFile(completionPath, []byte(script), 0o600); err != nil {
 		return fmt.Errorf("write completion.sh: %w", err)
 	}
 
@@ -262,7 +320,7 @@ complete -F _aka_completion aka
 	if err != nil {
 		return fmt.Errorf("open rc file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	addition := "\n# Added by `aka init` — tab completion for the `aka` command\n" +
 		sourceLine + "\n"
@@ -292,7 +350,7 @@ func LoadInstalled() ([]InstalledEntry, error) {
 	return entries, nil
 }
 
-// SaveInstalled writes entries to installed.json.
+// SaveInstalled writes entries to installed.json atomically at 0600.
 func SaveInstalled(entries []InstalledEntry) error {
 	path, err := InstalledJSONPath()
 	if err != nil {
@@ -302,7 +360,7 @@ func SaveInstalled(entries []InstalledEntry) error {
 	if err != nil {
 		return fmt.Errorf("marshal installed.json: %w", err)
 	}
-	return os.WriteFile(path, data, 0o644)
+	return atomicWriteFile(path, data, 0o600)
 }
 
 // Backup takes a timestamped backup of aliases.sh (and installed.json if present).
@@ -320,7 +378,7 @@ func Backup() error {
 	// Backup aliases.sh.
 	if data, err := os.ReadFile(aliasesPath); err == nil {
 		dst := filepath.Join(bd, "aliases.sh."+ts)
-		if err := os.WriteFile(dst, data, 0o644); err != nil {
+		if err := atomicWriteFile(dst, data, 0o600); err != nil {
 			return fmt.Errorf("backup aliases.sh: %w", err)
 		}
 	}
@@ -332,7 +390,7 @@ func Backup() error {
 	}
 	if data, err := os.ReadFile(installedPath); err == nil {
 		dst := filepath.Join(bd, "installed.json."+ts)
-		if err := os.WriteFile(dst, data, 0o644); err != nil {
+		if err := atomicWriteFile(dst, data, 0o600); err != nil {
 			return fmt.Errorf("backup installed.json: %w", err)
 		}
 	}
@@ -353,12 +411,12 @@ func WriteAliasesFile(entries []InstalledEntry) error {
 		return sorted[i].Name < sorted[j].Name
 	})
 
-	var aliases, functions []InstalledEntry
+	var aliasEntries, functions []InstalledEntry
 	for _, e := range sorted {
 		if e.Kind == "function" {
 			functions = append(functions, e)
 		} else {
-			aliases = append(aliases, e)
+			aliasEntries = append(aliasEntries, e)
 		}
 	}
 
@@ -366,17 +424,24 @@ func WriteAliasesFile(entries []InstalledEntry) error {
 	sb.WriteString("# Managed by AKA (https://github.com/ntalmon/aka) — do not edit manually\n")
 	sb.WriteString("# Last updated: " + time.Now().Format(time.RFC3339) + "\n\n")
 
-	for _, e := range aliases {
-		sb.WriteString(fmt.Sprintf("alias %s='%s'\n", e.Name, escapeAlias(e.Template)))
+	for _, e := range aliasEntries {
+		fmt.Fprintf(&sb, "alias %s='%s'\n", e.Name, escapeAlias(e.Template))
 	}
 
 	if len(functions) > 0 {
 		sb.WriteString("\n")
-		for i, e := range functions {
-			if i > 0 {
+		written := 0
+		for _, e := range functions {
+			rendered, err := renderFunction(e)
+			if err != nil {
+				fmt.Printf("Warning: skipping unsafe function %q: %v\n", e.Name, err)
+				continue
+			}
+			if written > 0 {
 				sb.WriteString("\n")
 			}
-			sb.WriteString(renderFunction(e))
+			sb.WriteString(rendered)
+			written++
 		}
 	}
 
@@ -384,7 +449,7 @@ func WriteAliasesFile(entries []InstalledEntry) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(aliasesPath, []byte(sb.String()), 0o644)
+	return atomicWriteFile(aliasesPath, []byte(sb.String()), 0o600)
 }
 
 // escapeAlias escapes single quotes in alias body.
@@ -392,13 +457,17 @@ func escapeAlias(s string) string {
 	return strings.ReplaceAll(s, "'", `'\''`)
 }
 
-// renderFunction emits a shell function.
-func renderFunction(e InstalledEntry) string {
+// renderFunction emits a shell function, returning an error if the template
+// would escape the function body.
+func renderFunction(e InstalledEntry) (string, error) {
+	if err := ValidateFunctionTemplate(e.Template); err != nil {
+		return "", err
+	}
 	var sb strings.Builder
 	sb.WriteString("function " + e.Name + " () {\n")
 	sb.WriteString("  " + e.Template + "\n")
 	sb.WriteString("}\n")
-	return sb.String()
+	return sb.String(), nil
 }
 
 var (

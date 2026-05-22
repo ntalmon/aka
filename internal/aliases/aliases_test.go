@@ -70,7 +70,7 @@ func TestWriteAliasesFileSortedAndDeterministic(t *testing.T) {
 	iAbar := strings.Index(content, "abar")
 	iMfunc := strings.Index(content, "mfunc")
 	iZfoo := strings.Index(content, "zfoo")
-	if !(iAbar < iZfoo && iZfoo < iMfunc) {
+	if iAbar >= iZfoo || iZfoo >= iMfunc {
 		t.Errorf("unexpected section order: abar=%d zfoo=%d mfunc=%d", iAbar, iZfoo, iMfunc)
 	}
 

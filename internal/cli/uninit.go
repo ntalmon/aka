@@ -44,10 +44,10 @@ func runUninit(_ *cobra.Command, _ []string) error {
 	}
 	rcContent := string(rcData)
 
-	hasWrapper    := reWrapper.MatchString(rcContent)
-	hasAliasLine  := reAliasSource.MatchString(rcContent)
+	hasWrapper := reWrapper.MatchString(rcContent)
+	hasAliasLine := reAliasSource.MatchString(rcContent)
 	hasCompletion := reCompletionSource.MatchString(rcContent)
-	hasAnyRC      := hasWrapper || hasAliasLine || hasCompletion
+	hasAnyRC := hasWrapper || hasAliasLine || hasCompletion
 
 	home, err := os.UserHomeDir()
 	if err != nil {

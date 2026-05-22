@@ -186,7 +186,7 @@ func (a *AnthropicProvider) Suggest(ctx context.Context, censored []history.Entr
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respData, err := io.ReadAll(resp.Body)
 	if err != nil {

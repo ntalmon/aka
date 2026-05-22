@@ -28,10 +28,10 @@ func BuildPrompt(entries []history.Entry) string {
 	for i, e := range entries {
 		if hasTS {
 			delta := formatDelta(e.Timestamp, prevTS, i)
-			sb.WriteString(fmt.Sprintf("%3d. %-8s %s\n", i+1, delta, e.Command))
+			fmt.Fprintf(&sb, "%3d. %-8s %s\n", i+1, delta, e.Command)
 			prevTS = e.Timestamp
 		} else {
-			sb.WriteString(fmt.Sprintf("%3d. %s\n", i+1, e.Command))
+			fmt.Fprintf(&sb, "%3d. %s\n", i+1, e.Command)
 		}
 	}
 

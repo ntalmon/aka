@@ -18,7 +18,7 @@ func ParseBash(path string) ([]Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var entries []Entry
 	var pendingTS int64

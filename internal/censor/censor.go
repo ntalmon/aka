@@ -27,12 +27,25 @@ type secretPattern struct {
 var secretPatterns = []secretPattern{
 	// AWS access key IDs.
 	{regexp.MustCompile(`AKIA[0-9A-Z]{16}`), "TOKEN"},
-	// GitHub tokens (gh[ps]_ prefix).
+	// GitHub classic tokens (ghp_/ghs_ prefix).
 	{regexp.MustCompile(`gh[ps]_[A-Za-z0-9]{36}`), "TOKEN"},
-	// OpenAI keys.
+	// GitHub fine-grained PATs.
+	{regexp.MustCompile(`github_pat_[A-Za-z0-9_]{82}`), "TOKEN"},
+	// OpenAI legacy keys.
 	{regexp.MustCompile(`sk-[A-Za-z0-9]{48}`), "TOKEN"},
+	// OpenAI project keys.
+	{regexp.MustCompile(`sk-proj-[A-Za-z0-9_\-]{20,}`), "TOKEN"},
 	// Anthropic keys.
 	{regexp.MustCompile(`sk-ant-[A-Za-z0-9-]{95}`), "TOKEN"},
+	// Groq API keys.
+	{regexp.MustCompile(`gsk_[A-Za-z0-9]{52}`), "TOKEN"},
+	// Slack API tokens.
+	{regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]+`), "TOKEN"},
+	// Stripe live secret/publishable keys.
+	{regexp.MustCompile(`sk_live_[A-Za-z0-9]{24}`), "TOKEN"},
+	{regexp.MustCompile(`pk_live_[A-Za-z0-9]{24}`), "TOKEN"},
+	// Google Cloud Platform API keys.
+	{regexp.MustCompile(`AIza[0-9A-Za-z\-_]{35}`), "TOKEN"},
 	// JWTs: three base64url segments separated by dots.
 	{regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`), "TOKEN"},
 	// Bearer tokens (grab the token value after "Bearer ").
@@ -66,11 +79,22 @@ func isLikelySecret(s string) bool {
 	if len(s) < 20 {
 		return false
 	}
-	// Must have a mix of char classes to qualify (avoid flagging long paths, etc.).
+	// Require at least 2 of 3 char classes to qualify (avoids flagging long paths,
+	// all-lowercase prose, etc., while catching hex/base64 secrets that lack one class).
 	hasUpper := strings.ContainsAny(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 	hasLower := strings.ContainsAny(s, "abcdefghijklmnopqrstuvwxyz")
 	hasDigit := strings.ContainsAny(s, "0123456789")
-	if !(hasUpper && hasLower && hasDigit) {
+	charClasses := 0
+	if hasUpper {
+		charClasses++
+	}
+	if hasLower {
+		charClasses++
+	}
+	if hasDigit {
+		charClasses++
+	}
+	if charClasses < 2 {
 		return false
 	}
 	return shannonEntropy(s) > 4.5

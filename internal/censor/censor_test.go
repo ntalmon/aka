@@ -179,9 +179,9 @@ func TestIsLikelySecretShortStringFalse(t *testing.T) {
 }
 
 func TestIsLikelySecretNoMixedClassFalse(t *testing.T) {
-	// All lowercase — missing upper.
-	if isLikelySecret("abcdefghijklmnopqrstuvwxyz01234") {
-		t.Error("all-lowercase string should not be flagged as secret")
+	// Only one char class (lowercase only) — must not be flagged even at high entropy.
+	if isLikelySecret("abcdefghijklmnopqrstuvwxyzabcde") {
+		t.Error("single-char-class (lowercase only) string should not be flagged as secret")
 	}
 }
 

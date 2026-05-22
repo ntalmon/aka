@@ -54,7 +54,9 @@ if command -v sha256sum >/dev/null 2>&1; then
 elif command -v shasum >/dev/null 2>&1; then
   grep "${ARCHIVE}" checksums.txt | shasum -a 256 --check --status
 else
-  echo "Warning: could not verify checksum (sha256sum/shasum not found)" >&2
+  echo "Error: sha256sum/shasum not found — cannot verify download integrity" >&2
+  echo "Install coreutils (Linux) or use macOS built-in shasum, then retry." >&2
+  exit 1
 fi
 cd - >/dev/null
 

@@ -154,4 +154,12 @@ Version is injected at build time via `-ldflags "-X main.version={{.Version}}"` 
 
 When a significant mistake is made during a session — wrong assumption, bad approach, avoidable breakage — add a concise entry here so future sessions don't repeat it. Format: **what went wrong**, then how to avoid it.
 
+**Entropy heuristic required all-3 char classes (upper+lower+digit).** Changed to 2-of-3 so hex/base64 secrets with only two classes are caught. Update the test string too — the old test used lowercase+digits (2 classes) and must now use a truly single-class string to remain a "should not flag" case.
+
+**`golangci-lint` errcheck flags `defer os.Remove(f)`, `defer f.Close()`, `defer resp.Body.Close()`.** Always write these as `defer func() { _ = os.Remove(f) }()` etc. Plain `defer expr` on error-returning functions fails errcheck by default.
+
+**`strings.Builder` + `fmt.Sprintf` inside `WriteString` is flagged by staticcheck.** Use `fmt.Fprintf(&sb, ...)` directly instead.
+
+**Atomic file writes need `_ = tmp.Close()` in error paths.** When calling `tmp.Close()` before an early return (cleanup path), use `_ = tmp.Close()` so errcheck doesn't flag the discarded error.
+
 <!-- Add new lessons above this line -->

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	toml "github.com/pelletier/go-toml/v2"
 	"github.com/spf13/viper"
 )
 
@@ -21,14 +22,19 @@ type Config struct {
 	GeminiAPIKey    string `toml:"gemini_api_key" mapstructure:"gemini_api_key"`
 }
 
-// configFilePath returns the path to the config file.
+// configFilePath returns the path to the config file, creating the directory
+// at 0700 if it doesn't exist.
 func configFilePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 	dir := filepath.Join(home, ".config", "aka")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	// Tighten permissions even if the directory already existed.
+	if err := os.Chmod(dir, 0o700); err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "config.toml"), nil
@@ -68,24 +74,36 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// Save writes the config to ~/.config/aka/config.toml.
+// Save writes the config to ~/.config/aka/config.toml atomically at 0600.
 func Save(cfg *Config) error {
 	path, err := configFilePath()
 	if err != nil {
 		return err
 	}
 
-	v := viper.New()
-	v.SetConfigFile(path)
-	v.SetConfigType("toml")
-	v.Set("provider", cfg.Provider)
-	v.Set("model", cfg.Model)
-	v.Set("dry_run", cfg.DryRun)
-	v.Set("max_history", cfg.MaxHistory)
-	v.Set("anthropic_api_key", cfg.AnthropicAPIKey)
-	v.Set("groq_api_key", cfg.GroqAPIKey)
-	v.Set("openai_api_key", cfg.OpenAIAPIKey)
-	v.Set("gemini_api_key", cfg.GeminiAPIKey)
+	data, err := toml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
 
-	return v.WriteConfigAs(path)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".aka-config-tmp-")
+	if err != nil {
+		return fmt.Errorf("create temp config: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op after successful rename
+
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp config: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp config: %w", err)
+	}
+	return os.Rename(tmpName, path)
 }

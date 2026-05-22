@@ -112,12 +112,17 @@ func editEntriesInEditor(entries []history.Entry) ([]history.Entry, error) {
 		return nil, fmt.Errorf("create temp file: %w", err)
 	}
 	tmpPath := f.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	for _, e := range entries {
-		fmt.Fprintln(f, e.Command)
+		if _, werr := fmt.Fprintln(f, e.Command); werr != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("write temp file: %w", werr)
+		}
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		return nil, fmt.Errorf("close temp file: %w", err)
+	}
 
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
@@ -173,7 +178,7 @@ func ReviewSuggestions(suggestions []llm.Suggestion) ([]llm.Suggestion, error) {
 
 		opts := make([]huh.Option[int], len(batch))
 		for i, s := range batch {
-			label := fmt.Sprintf("%-14s  [%s]  %s", s.Name, strings.ToLower(s.Kind), s.Template)
+			label := fmt.Sprintf("%-14s  [%s]  %s", sanitizeForDisplay(s.Name), strings.ToLower(s.Kind), sanitizeForDisplay(s.Template))
 			opts[i] = huh.NewOption(label, start+i).Selected(true)
 		}
 
@@ -234,29 +239,40 @@ func ReviewSuggestions(suggestions []llm.Suggestion) ([]llm.Suggestion, error) {
 	return accepted, nil
 }
 
+// sanitizeForDisplay strips ASCII control characters (except tab and newline) to
+// prevent terminal escape-sequence injection from LLM output.
+func sanitizeForDisplay(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 && r != '\t' && r != '\n' {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // printSuggestion renders a single suggestion to stdout.
 func printSuggestion(idx, total int, s llm.Suggestion) {
 	fmt.Println(mutedStyle.Render(strings.Repeat("─", 54)))
 	fmt.Printf("%s  %s  %s\n",
 		titleStyle.Render(fmt.Sprintf("[%d/%d]", idx, total)),
-		titleStyle.Render(s.Name),
+		titleStyle.Render(sanitizeForDisplay(s.Name)),
 		mutedStyle.Render("("+strings.ToLower(s.Kind)+")"),
 	)
-	fmt.Printf("  %s  %s\n", headerStyle.Render("Template:"), s.Template)
+	fmt.Printf("  %s  %s\n", headerStyle.Render("Template:"), sanitizeForDisplay(s.Template))
 
 	if len(s.Params) > 0 {
 		fmt.Printf("  %s\n", headerStyle.Render("Parameters:"))
 		for _, p := range s.Params {
-			fmt.Printf("    $%s (%s) — %s\n", p.Name, p.Type, p.Description)
+			fmt.Printf("    $%s (%s) — %s\n", sanitizeForDisplay(p.Name), sanitizeForDisplay(p.Type), sanitizeForDisplay(p.Description))
 		}
 	}
 
-	fmt.Printf("  %s  %s\n", headerStyle.Render("Rationale:"), s.Rationale)
+	fmt.Printf("  %s  %s\n", headerStyle.Render("Rationale:"), sanitizeForDisplay(s.Rationale))
 
 	if len(s.ExampleUses) > 0 {
 		fmt.Printf("  %s\n", headerStyle.Render("Examples:"))
 		for _, ex := range s.ExampleUses {
-			fmt.Printf("    $ %s\n", ex)
+			fmt.Printf("    $ %s\n", sanitizeForDisplay(ex))
 		}
 	}
 	fmt.Println()
