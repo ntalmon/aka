@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ntalmon/aka/aka-cli/internal/aliases"
+	"github.com/ntalmon/aka/aka-cli/internal/config"
 	"github.com/ntalmon/aka/aka-cli/internal/ui"
 )
 
@@ -70,6 +71,20 @@ func runInit(_ *cobra.Command, _ []string) error {
 		fmt.Printf("  Completion:   %s\n", completionPath)
 	}
 	fmt.Printf("  Source line added to: %s\n", rcFile)
+
+	// If no API key is configured yet, prompt for it now so the user is ready to run `aka scan`.
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if apiKeyForProvider(cfg) == "" && cfg.Provider != "ollama" {
+		fmt.Println()
+		if err := ensureAPIKey(cfg); err != nil {
+			fmt.Printf("Warning: could not configure API key: %v\n", err)
+			fmt.Println("You can set it later with: aka config set-key")
+		}
+	}
+
 	fmt.Println("\nRun `aka scan` to generate your first aliases.")
 	fmt.Printf("Then reload your shell: source %s\n", rcFile)
 	return nil

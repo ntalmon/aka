@@ -42,6 +42,7 @@ Get started:
 	root.PersistentFlags().Bool("dry-run", false, "Prevent all network calls; print what would be sent")
 
 	root.AddCommand(cli.NewInitCmd())
+	root.AddCommand(cli.NewUninitCmd())
 	root.AddCommand(cli.NewScanCmd())
 	root.AddCommand(cli.NewListCmd())
 	root.AddCommand(cli.NewUndoCmd())

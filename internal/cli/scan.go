@@ -67,30 +67,10 @@ func runScan(cmd *cobra.Command, _ []string) error {
 	// Step 1: Check/get API key (unless dry-run; Ollama needs no key).
 	var apiKey string
 	if !dryRun {
-		apiKey = apiKeyForProvider(cfg)
-		if apiKey == "" && cfg.Provider != "ollama" {
-			fmt.Println("No API key configured.")
-			chosenProvider, err := ui.PromptProvider()
-			if err != nil {
-				return fmt.Errorf("select provider: %w", err)
-			}
-			cfg.Provider = chosenProvider
-			cfg.Model = llm.ModelsForProvider(chosenProvider)[0].ID
-
-			if chosenProvider != "ollama" {
-				apiKey, err = ui.PromptAPIKey(chosenProvider)
-				if err != nil {
-					return fmt.Errorf("get API key: %w", err)
-				}
-				if apiKey == "" {
-					return fmt.Errorf("API key required")
-				}
-				setAPIKeyForProvider(cfg, chosenProvider, apiKey)
-			}
-			if saveErr := config.Save(cfg); saveErr != nil {
-				fmt.Printf("Warning: could not save config: %v\n", saveErr)
-			}
+		if err := ensureAPIKey(cfg); err != nil {
+			return err
 		}
+		apiKey = apiKeyForProvider(cfg)
 	}
 
 	// Step 2: Read history.
@@ -277,6 +257,36 @@ func detectShellName(shellPath string) string {
 	default:
 		return ""
 	}
+}
+
+// ensureAPIKey prompts for a provider and API key if none is configured, then saves.
+// It is a no-op when a key is already present or the provider is ollama.
+func ensureAPIKey(cfg *config.Config) error {
+	if apiKeyForProvider(cfg) != "" || cfg.Provider == "ollama" {
+		return nil
+	}
+	fmt.Println("No API key configured.")
+	chosenProvider, err := ui.PromptProvider()
+	if err != nil {
+		return fmt.Errorf("select provider: %w", err)
+	}
+	cfg.Provider = chosenProvider
+	cfg.Model = llm.ModelsForProvider(chosenProvider)[0].ID
+
+	if chosenProvider != "ollama" {
+		apiKey, err := ui.PromptAPIKey(chosenProvider)
+		if err != nil {
+			return fmt.Errorf("get API key: %w", err)
+		}
+		if apiKey == "" {
+			return fmt.Errorf("API key required")
+		}
+		setAPIKeyForProvider(cfg, chosenProvider, apiKey)
+	}
+	if saveErr := config.Save(cfg); saveErr != nil {
+		fmt.Printf("Warning: could not save config: %v\n", saveErr)
+	}
+	return nil
 }
 
 func apiKeyForProvider(cfg *config.Config) string {
