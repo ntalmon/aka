@@ -47,7 +47,7 @@ Each step is a thin wrapper over its `internal/` package. The cobra subcommand i
 | `config.toml` | User config — provider, model, API keys, max_history, dry_run |
 | `backups/` | Timestamped snapshots before every write |
 
-`config.toml` fields: `provider` ("anthropic" \| "groq"), `model`, `anthropic_api_key`, `groq_api_key`, `dry_run`, `max_history`. API keys are stored here in plaintext — no env vars or OS keychain involved.
+`config.toml` fields: `provider` ("anthropic" \| "groq" \| "openai" \| "gemini" \| "ollama"), `model`, `anthropic_api_key`, `groq_api_key`, `openai_api_key`, `gemini_api_key`, `dry_run`, `max_history`. API keys are stored here in plaintext — no env vars or OS keychain involved. Ollama requires no key.
 
 `max_history` (default 500) caps how many normalized entries are sent to the LLM. When the normalized count exceeds the limit, `ui.ChooseMaxHistory` prompts the user to continue with the current limit, send all entries for this run, or change the limit permanently (saved back to `config.toml`).
 
@@ -90,7 +90,17 @@ Supported providers and their model lists live in `internal/llm/models.go` (`Sup
 
 ### First-run / key setup
 
-When `aka scan` finds no API key in `config.toml`, it prompts: (1) choose provider, (2) enter API key. The provider's recommended default model is set automatically. `aka config set-key [--provider anthropic|groq]` does the same interactively at any time.
+`aka init` is the primary path: after shell wiring it automatically prompts for provider and API key if none is configured (via `ensureAPIKey()` in `internal/cli/scan.go`, shared with `aka scan`). `aka scan` calls the same helper as a fallback for users who skipped init. `aka config set-key [--provider <provider>]` does it interactively at any time. The provider's recommended default model is set automatically.
+
+### `aka uninit`
+
+Removes everything `aka init` added: strips the `aka()` wrapper, `aliases.sh` source line, and `completion.sh` source line from the shell RC file (matched by regex, robust to ordering), then deletes `~/.config/aka/` entirely. Shows a summary of what will be removed and asks a single `[y/N]` prompt before acting. The binary itself is not removed.
+
+## Security
+
+The highest-leverage trust boundary in this project is **LLM output → user's shell**: anything that ends up in an `InstalledEntry.Name` or `InstalledEntry.Template` is eventually sourced by the user's interactive shell. Treat the LLM as an *untrusted input*, not an authority — validate names against a strict identifier regex, escape/reject metacharacters in templates, and never interpolate either into `sh -c` strings (see [internal/apply/apply.go](internal/apply/apply.go) `NameExistsInShell` for the canonical pitfall).
+
+The full checklist — covering this boundary plus history censoring, on-disk secret perms, FS atomicity, and CI/supply chain — lives in [SECURITY-AUDIT.md](SECURITY-AUDIT.md). Run it with the `/security-audit` slash command (optionally scoped: `/security-audit 1` runs only §1). Update the checklist whenever a new trust boundary is introduced (e.g., a new provider, a new on-disk file, a new install path).
 
 ## Local pre-push checks
 
