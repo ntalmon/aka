@@ -11,12 +11,14 @@ import (
 
 // Config holds all AKA configuration options.
 type Config struct {
-	Provider        string `toml:"provider" mapstructure:"provider"` // "anthropic" | "groq"
+	Provider        string `toml:"provider" mapstructure:"provider"` // "anthropic" | "groq" | "openai" | "gemini" | "ollama"
 	Model           string `toml:"model" mapstructure:"model"`
 	DryRun          bool   `toml:"dry_run" mapstructure:"dry_run"`
 	MaxHistory      int    `toml:"max_history" mapstructure:"max_history"`
 	AnthropicAPIKey string `toml:"anthropic_api_key" mapstructure:"anthropic_api_key"`
 	GroqAPIKey      string `toml:"groq_api_key" mapstructure:"groq_api_key"`
+	OpenAIAPIKey    string `toml:"openai_api_key" mapstructure:"openai_api_key"`
+	GeminiAPIKey    string `toml:"gemini_api_key" mapstructure:"gemini_api_key"`
 }
 
 // configFilePath returns the path to the config file.
@@ -82,6 +84,8 @@ func Save(cfg *Config) error {
 	v.Set("max_history", cfg.MaxHistory)
 	v.Set("anthropic_api_key", cfg.AnthropicAPIKey)
 	v.Set("groq_api_key", cfg.GroqAPIKey)
+	v.Set("openai_api_key", cfg.OpenAIAPIKey)
+	v.Set("gemini_api_key", cfg.GeminiAPIKey)
 
 	return v.WriteConfigAs(path)
 }

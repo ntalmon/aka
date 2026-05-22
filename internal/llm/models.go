@@ -15,7 +15,10 @@ type ProviderOption struct {
 // SupportedProviders lists all providers aka knows about.
 var SupportedProviders = []ProviderOption{
 	{ID: "anthropic", Label: "Anthropic (Claude)"},
-	{ID: "groq", Label: "Groq (Llama, Mixtral, Gemma)"},
+	{ID: "groq", Label: "Groq (Llama, Mixtral)"},
+	{ID: "openai", Label: "OpenAI (GPT-4o)"},
+	{ID: "gemini", Label: "Google Gemini"},
+	{ID: "ollama", Label: "Ollama (local, no API key)"},
 }
 
 // ModelsForProvider returns the supported models for the given provider,
@@ -29,6 +32,25 @@ func ModelsForProvider(provider string) []ModelOption {
 			{ID: "llama-3.1-8b-instant", Label: "Llama 3.1 8B — fastest"},
 			{ID: "mixtral-8x7b-32768", Label: "Mixtral 8x7B — long context"},
 			{ID: "gemma2-9b-it", Label: "Gemma 2 9B"},
+		}
+	case "openai":
+		return []ModelOption{
+			{ID: "gpt-4o-mini", Label: "GPT-4o mini — fast, cheap (recommended)"},
+			{ID: "gpt-4o", Label: "GPT-4o — most capable"},
+			{ID: "gpt-4-turbo", Label: "GPT-4 Turbo"},
+		}
+	case "gemini":
+		return []ModelOption{
+			{ID: "gemini-2.0-flash", Label: "Gemini 2.0 Flash — fast, free tier (recommended)"},
+			{ID: "gemini-1.5-pro", Label: "Gemini 1.5 Pro — most capable"},
+			{ID: "gemini-1.5-flash", Label: "Gemini 1.5 Flash — fast"},
+		}
+	case "ollama":
+		return []ModelOption{
+			{ID: "llama3.3", Label: "Llama 3.3 (recommended)"},
+			{ID: "llama3.2", Label: "Llama 3.2"},
+			{ID: "mistral", Label: "Mistral 7B"},
+			{ID: "qwen2.5-coder", Label: "Qwen 2.5 Coder"},
 		}
 	default: // anthropic
 		return []ModelOption{

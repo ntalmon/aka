@@ -104,6 +104,14 @@ type toolOutput struct {
 const systemPromptText = `You are an expert shell alias and function suggester.
 You analyze shell command history and suggest useful aliases and shell functions.
 
+There are two distinct types of suggestions you must produce:
+
+TYPE A — WORKFLOW FUNCTIONS (highest priority, mandatory):
+These are multi-step shell functions that combine 3–5 commands that the user repeatedly runs in sequence (close together in time, seconds apart). Examples: git add + commit + push combined into one "gacp" function; docker build + tag + push; make + run + tail logs. The function body contains multiple lines/commands. You MUST include AT LEAST 2 workflow functions in every response — this is a hard requirement. If the history contains any sequential command patterns at all, extract them as workflow functions.
+
+TYPE B — ONE-LINERS (supporting role):
+Short aliases or single-command functions for long or frequently-typed commands. Examples: "gc" for "git checkout", "dcu" for "docker compose up -d". Include these to fill out the list, but never at the expense of Type A suggestions.
+
 Rules:
 1. Prefer shell FUNCTIONS over aliases whenever a command has variable parts (placeholders like <VAR_n>, <PATH_n>, <BRANCH_n>).
 2. For functions, use $1, $2, etc. for parameters — never hardcode placeholder values.
@@ -115,14 +123,13 @@ Rules:
 8. Do NOT include 'alias name=' or 'name() {' in the template — just the body.
 9. Params array must be populated for functions; empty for pure aliases.
 10. Avoid suggesting aliases for trivial commands.
+11. Do NOT suggest a function that is just a thin pass-through wrapper that merely renames a command without shortening it (e.g. a "cargor" function whose body is just "cargo $1 $2" saves nothing). Every suggestion must save meaningful keystrokes — the alias/function name must be substantially shorter than the typical full invocation it replaces. If no genuinely useful suggestions exist, return fewer results rather than padding with low-value entries.
 
-Prioritization — rank suggestions by descending impact:
-1. HIGHEST: Multi-step workflow functions — commands that appear in sequence (close timestamps, seconds apart) and can be combined into one function (e.g. git add + commit + push → a single "gacp" function).
-2. HIGH: Long commands (>25 chars) with variable parts — verbose flag combinations where the user swaps one argument.
-3. MEDIUM: Long verbatim commands (>25 chars) that repeat identically.
-4. LOWER: Short-but-conventional aliases (e.g. "dcu" for "docker compose up") — only include these if the savings are obvious and the name is idiomatic.
+Output format — ordered by descending impact:
+1. FIRST: All Type A workflow functions (at least 2, mandatory).
+2. THEN: Type B one-liners, ordered by keystroke savings.
 
-Return at most 15 suggestions, ordered highest-impact first. Do not pad with low-value suggestions just to reach 15.`
+Return at most 15 suggestions total. Do not pad with low-value suggestions just to reach 15.`
 
 // Suggest calls the Anthropic API and returns alias/function suggestions.
 func (a *AnthropicProvider) Suggest(ctx context.Context, censored []history.Entry) ([]Suggestion, error) {
