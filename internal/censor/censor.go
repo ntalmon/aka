@@ -204,12 +204,54 @@ func shapeKey(s commandShape) string {
 	return strings.Join(parts, " ")
 }
 
+// isIPv4 returns true if s looks like an IPv4 address (four decimal octets).
+func isIPv4(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, p := range parts {
+		if len(p) == 0 || len(p) > 3 {
+			return false
+		}
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// isPortNumber returns true if s is a pure integer in the valid port range [1, 65535].
+func isPortNumber(s string) bool {
+	if len(s) == 0 || len(s) > 5 {
+		return false
+	}
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n >= 1 && n <= 65535
+}
+
 // inferVarType guesses the typed placeholder based on value and context.
 func inferVarType(value, binary string, idx int) string {
 	v := strings.ToLower(value)
 	// Path-like: contains / or starts with ~ or .
 	if strings.ContainsAny(value, "/") || strings.HasPrefix(value, "~") || strings.HasPrefix(value, ".") {
 		return "PATH"
+	}
+	// IPv4 address: censor (may reveal internal network topology).
+	if isIPv4(value) {
+		return "IP"
+	}
+	// Port number: not sensitive, leave as-is.
+	if isPortNumber(value) {
+		return "PORT"
 	}
 	// Hostname-like: contains dots but no slashes, looks like a domain.
 	if strings.Contains(v, ".") && !strings.Contains(v, "/") && !strings.HasPrefix(v, "<") {
@@ -288,13 +330,23 @@ func ParameterizeVars(commands []string) (parameterized []string, varMap map[str
 	for sk, c := range clusterMap {
 		binary := strings.SplitN(sk, " ", 2)[0]
 		for si, vals := range c.posValues {
-			if len(vals) >= 2 {
-				// Sort values for determinism.
-				sorted := make([]string, len(vals))
-				copy(sorted, vals)
-				sort.Strings(sorted)
-				slots = append(slots, slotInfo{sk: sk, slotIdx: si, values: sorted, binary: binary})
+			if len(vals) == 0 {
+				continue
 			}
+			peekTyp := inferVarType(vals[0], binary, si)
+			// Ports and paths are never parameterized.
+			if peekTyp == "PATH" || peekTyp == "PORT" {
+				continue
+			}
+			// IPs are always parameterized (even a single distinct value).
+			// All other types require ≥2 distinct values.
+			if peekTyp != "IP" && len(vals) < 2 {
+				continue
+			}
+			sorted := make([]string, len(vals))
+			copy(sorted, vals)
+			sort.Strings(sorted)
+			slots = append(slots, slotInfo{sk: sk, slotIdx: si, values: sorted, binary: binary})
 		}
 	}
 	// Sort slots for deterministic numbering.
@@ -313,8 +365,7 @@ func ParameterizeVars(commands []string) (parameterized []string, varMap map[str
 	for _, slot := range slots {
 		// Pick type from first value in the slot.
 		typ := inferVarType(slot.values[0], slot.binary, slot.slotIdx)
-		if typ == "PATH" {
-			// Paths aren't sensitive — leave the real values so the LLM sees actual context.
+		if typ == "PATH" || typ == "PORT" {
 			continue
 		}
 		typeCount[typ]++

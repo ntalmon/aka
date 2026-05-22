@@ -105,3 +105,54 @@ func TestParameterizeVarsMixedCluster(t *testing.T) {
 		t.Error("varMap should not be empty")
 	}
 }
+
+func TestParameterizeVarsIPAlwaysCensored(t *testing.T) {
+	// IP appears only once but should still be parameterized.
+	cmds := []string{
+		"uvicorn web_server:app --host 0.0.0.0 --port 8080",
+	}
+	parameterized, varMap := ParameterizeVars(cmds)
+	if strings.Contains(parameterized[0], "0.0.0.0") {
+		t.Errorf("IP address not replaced: %q", parameterized[0])
+	}
+	if !strings.Contains(parameterized[0], "<IP_") {
+		t.Errorf("expected <IP_n> placeholder: %q", parameterized[0])
+	}
+	if len(varMap) == 0 {
+		t.Error("varMap should not be empty")
+	}
+}
+
+func TestParameterizeVarsPortNotCensored(t *testing.T) {
+	// Port numbers should never be parameterized, even when they vary.
+	cmds := []string{
+		"uvicorn web_server:app --host 0.0.0.0 --port 8080",
+		"uvicorn web_server:app --host 0.0.0.0 --port 3000",
+		"uvicorn web_server:app --host 0.0.0.0 --port 443",
+	}
+	parameterized, _ := ParameterizeVars(cmds)
+	ports := []string{"8080", "3000", "443"}
+	for i, p := range parameterized {
+		if !strings.Contains(p, ports[i]) {
+			t.Errorf("cmd[%d]: port number was replaced: %q", i, p)
+		}
+	}
+}
+
+func TestParameterizeVarsIPVaryingCensored(t *testing.T) {
+	// Multiple distinct IPs should all map to the same placeholder.
+	cmds := []string{
+		"ssh 192.168.1.1",
+		"ssh 10.0.0.5",
+		"ssh 172.16.0.1",
+	}
+	parameterized, _ := ParameterizeVars(cmds)
+	for _, p := range parameterized {
+		if !strings.Contains(p, "<IP_") {
+			t.Errorf("expected <IP_n> placeholder: %q", p)
+		}
+	}
+	if parameterized[0] != parameterized[1] || parameterized[1] != parameterized[2] {
+		t.Errorf("varying IPs got different parameterizations: %v", parameterized)
+	}
+}
