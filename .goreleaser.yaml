@@ -1,0 +1,70 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: aka
+    main: ./cmd/aka
+    binary: aka
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: aka
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: ntalmon
+    name: aka-cli
+  draft: false
+  prerelease: auto
+
+brews:
+  - name: aka
+    repository:
+      owner: ntalmon
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/ntalmon/aka-cli"
+    description: "Shell history analyzer and alias manager powered by AI"
+    license: "MIT"
+    install: |
+      bin.install "aka"
+    test: |
+      system "#{bin}/aka", "--version"
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com

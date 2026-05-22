@@ -43,6 +43,11 @@ jobs:
           version: latest
           args: --timeout=5m
 
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
       - name: go test
         run: go test -race -count=1 ./...
 
