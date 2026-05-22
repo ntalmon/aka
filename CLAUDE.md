@@ -92,6 +92,39 @@ Supported providers and their model lists live in `internal/llm/models.go` (`Sup
 
 When `aka scan` finds no API key in `config.toml`, it prompts: (1) choose provider, (2) enter API key. The provider's recommended default model is set automatically. `aka config set-key [--provider anthropic|groq]` does the same interactively at any time.
 
+## Branching and parallel work
+
+Use **trunk-based development**: feature branches → PR → `main`. There is no long-lived `dev` branch.
+
+For parallel features across multiple Claude sessions, use **git worktrees** — each session gets its own directory checked out to its own branch, sharing the same `.git` repo:
+
+```bash
+git worktree add ../aka-feature-x feature-x
+git worktree add ../aka-feature-y feature-y
+```
+
+Never run two sessions in the same working directory on different branches — they will stomp on each other's files.
+
+## Release process
+
+Releases are triggered by pushing a version tag. CI runs tests first; goreleaser then cross-compiles and publishes.
+
+```bash
+git tag v1.2.3
+git push --tags
+```
+
+goreleaser (`.goreleaser.yaml`) handles:
+- Cross-compilation: darwin/linux (amd64 + arm64), windows/amd64
+- GitHub Release with tarballs and `checksums.txt`
+- Homebrew formula pushed to `ntalmon/homebrew-tap`
+
+**Prerequisites for the Homebrew push to work:**
+- The `ntalmon/homebrew-tap` GitHub repo must exist
+- A `HOMEBREW_TAP_GITHUB_TOKEN` secret (PAT with `repo` scope on the tap repo) must be set in this repo's Actions secrets
+
+Version is injected at build time via `-ldflags "-X main.version={{.Version}}"` — the `var version = "dev"` in `cmd/aka/main.go` is the fallback for local builds.
+
 ## Lessons learned
 
 When a significant mistake is made during a session — wrong assumption, bad approach, avoidable breakage — add a concise entry here so future sessions don't repeat it. Format: **what went wrong**, then how to avoid it.
