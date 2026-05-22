@@ -19,5 +19,5 @@ aka
 # macOS
 .DS_Store
 
-# Local Claude settings (contains tokens)
-.claude/settings.local.json
+# Claude Code local directory
+.claude/

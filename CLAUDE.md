@@ -19,7 +19,7 @@ go install ./cmd/aka                   # install `aka` binary to $GOPATH/bin
 
 CI additionally runs `golangci-lint` — run it locally if adding new packages or exported symbols.
 
-After every Go file edit, run `go build ./cmd/aka` to verify the binary still compiles. This is also enforced automatically via a PostToolUse hook in `.claude/settings.json`.
+After every Go file edit, run `gofmt -w <file>` to format and `go build ./cmd/aka` to verify the binary still compiles. Both are enforced automatically via PostToolUse hooks in `.claude/settings.json`.
 
 ## Architecture
 
@@ -51,6 +51,8 @@ Each step is a thin wrapper over its `internal/` package. The cobra subcommand i
 
 `max_history` (default 500) caps how many normalized entries are sent to the LLM. When the normalized count exceeds the limit, `ui.ChooseMaxHistory` prompts the user to continue with the current limit, send all entries for this run, or change the limit permanently (saved back to `config.toml`).
 
+History cursor behavior: `minNewEntries` (100) is the threshold below which `ui.ChooseHistoryMode` is shown instead of auto-sending the diff. Within that prompt, the "analyze new commands only" option is shown only when `newCount >= 50` — below 50 the user can only choose full history or abort.
+
 ### History entries (`internal/history/`)
 
 `ReadAll` returns `[]history.Entry{Timestamp int64, Command string}`. `Timestamp` is a Unix epoch second; **0 means unknown** (plain history files with no timestamp format). Zsh extended history (`: EPOCH:DURATION;CMD`, enabled by `setopt EXTENDED_HISTORY`) and bash `HISTTIMEFORMAT` both populate it. `normalize.Normalize` only trims whitespace and drops blank lines — duplicates and trivial commands are preserved so the LLM sees full sequential workflow patterns.
@@ -58,6 +60,8 @@ Each step is a thin wrapper over its `internal/` package. The cobra subcommand i
 ### Censor pipeline (`internal/censor/`)
 
 `CensorAll()` accepts and returns `[]history.Entry`, preserving timestamps. Internally it extracts the `Command` strings, runs both passes as `[]string`, then re-attaches timestamps. The exported helpers `CensorSecrets` and `ParameterizeVars` still operate on `[]string` directly and are tested that way.
+
+`ui.ReviewCensored` returns `([]history.Entry, error)` — nil means the user aborted. It shows a 3-option prompt: send as-is, edit manually (opens `$EDITOR`, defaults to `vi`), or abort. The edited text is read back line-by-line into new `history.Entry` values.
 
 Two sequential passes:
 1. **Pass 1 — secrets**: regex pack (AWS/GitHub/OpenAI/Anthropic keys, JWTs, Bearer tokens, `password=`, URL creds) + Shannon-entropy heuristic (>4.5 bits/char, >20 chars, mixed case+digits). Same literal value across commands → same `<TOKEN_n>` index.
@@ -78,7 +82,9 @@ Both share the same system prompt (defined in `anthropic.go` as `systemPromptTex
 
 `Suggest` accepts `[]history.Entry`. `suggest.BuildPrompt` includes `[+Xs]`/`[+Xm]` time-delta columns when timestamps are non-zero, falling back to plain numbering otherwise. This lets the LLM identify workflow sessions (commands seconds apart).
 
-The system prompt instructs the LLM to return **at most 15 suggestions**, ranked by impact tier: multi-step workflow functions > long commands with variable parts > long verbatim commands > short conventional aliases.
+The system prompt distinguishes two suggestion types: **Type A — workflow functions** (3–5 sequential commands combined into one function; at least 2 required per run) and **Type B — one-liners** (short aliases for long single commands). Type A suggestions are always listed first. Pass-through wrappers that merely rename a command without saving keystrokes are explicitly banned. The `description` field in `param` objects is optional in the tool schema (Groq's LLM sometimes omits it).
+
+The `--history N` flag overrides `max_history` for one run and prints a note in the output to distinguish it from a normal run.
 
 Supported providers and their model lists live in `internal/llm/models.go` (`SupportedProviders`, `ModelsForProvider`). Add new providers there and implement the `Provider` interface.
 
@@ -86,6 +92,8 @@ Supported providers and their model lists live in `internal/llm/models.go` (`Sup
 
 When `aka analyze` finds no API key in `config.toml`, it prompts: (1) choose provider, (2) enter API key. The provider's recommended default model is set automatically. `aka config set-key [--provider anthropic|groq]` does the same interactively at any time.
 
-### v0.2 scope (not yet built)
+## Lessons learned
 
-`aka watch` (real-time alias coach) and `aka prune` are not yet built. Packages `internal/matcher/`, `internal/nudgestate/`, `internal/hooks/`, and `internal/prune/` are not yet created.
+When a significant mistake is made during a session — wrong assumption, bad approach, avoidable breakage — add a concise entry here so future sessions don't repeat it. Format: **what went wrong**, then how to avoid it.
+
+<!-- Add new lessons above this line -->
