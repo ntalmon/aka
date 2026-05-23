@@ -41,6 +41,7 @@ signs:
     output: true
     args:
       - sign-blob
+      - "--yes"
       - "--output-signature=${signature}"
       - "--output-certificate=${certificate}"
       - "${artifact}"
