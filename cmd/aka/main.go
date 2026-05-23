@@ -28,10 +28,10 @@ func newRootCmd() *cobra.Command {
 and uses the Anthropic API to suggest useful shell aliases and functions.
 
 Get started:
-  aka init       # one-time setup
-  aka scan       # scan history and get suggestions
-  aka list       # see installed aliases
-  aka undo       # revert last change`,
+  aka init          # one-time setup
+  aka scan          # scan history and get suggestions
+  aka list          # see installed aliases
+  aka delete <name> # remove an alias or function`,
 		Version: version,
 	}
 
@@ -39,13 +39,11 @@ Get started:
 	root.SilenceUsage = true
 	root.CompletionOptions.DisableDefaultCmd = true
 
-	root.PersistentFlags().Bool("dry-run", false, "Prevent all network calls; print what would be sent")
-
 	root.AddCommand(cli.NewInitCmd())
 	root.AddCommand(cli.NewUninitCmd())
 	root.AddCommand(cli.NewScanCmd())
 	root.AddCommand(cli.NewListCmd())
-	root.AddCommand(cli.NewUndoCmd())
+	root.AddCommand(cli.NewDeleteCmd())
 	root.AddCommand(cli.NewConfigCmd())
 
 	return root
