@@ -30,9 +30,6 @@ func TestLoadReturnsDefaults(t *testing.T) {
 	if cfg.MaxHistory != 500 {
 		t.Errorf("default max_history: want 500, got %d", cfg.MaxHistory)
 	}
-	if cfg.DryRun {
-		t.Error("default dry_run should be false")
-	}
 	if cfg.AnthropicAPIKey != "" {
 		t.Errorf("default anthropic_api_key should be empty, got %q", cfg.AnthropicAPIKey)
 	}
@@ -47,7 +44,6 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	want := &Config{
 		Provider:        "groq",
 		Model:           "llama3-70b",
-		DryRun:          true,
 		MaxHistory:      200,
 		AnthropicAPIKey: "sk-ant-test",
 		GroqAPIKey:      "gsk-test",
@@ -64,9 +60,6 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	}
 	if got.Model != want.Model {
 		t.Errorf("Model: want %q got %q", want.Model, got.Model)
-	}
-	if got.DryRun != want.DryRun {
-		t.Errorf("DryRun: want %v got %v", want.DryRun, got.DryRun)
 	}
 	if got.MaxHistory != want.MaxHistory {
 		t.Errorf("MaxHistory: want %d got %d", want.MaxHistory, got.MaxHistory)

@@ -12,7 +12,6 @@ func TestSetMaxHistoryCmdSavesConfig(t *testing.T) {
 	want := &config.Config{
 		Provider:        "groq",
 		Model:           "llama-3.3-70b-versatile",
-		DryRun:          true,
 		MaxHistory:      500,
 		AnthropicAPIKey: "sk-ant-test",
 		GroqAPIKey:      "gsk-test",
@@ -34,7 +33,7 @@ func TestSetMaxHistoryCmdSavesConfig(t *testing.T) {
 	if got.MaxHistory != 1200 {
 		t.Fatalf("MaxHistory: want 1200 got %d", got.MaxHistory)
 	}
-	if got.Provider != want.Provider || got.Model != want.Model || got.DryRun != want.DryRun {
+	if got.Provider != want.Provider || got.Model != want.Model {
 		t.Fatalf("config fields were not preserved: got %#v", got)
 	}
 	if got.AnthropicAPIKey != want.AnthropicAPIKey || got.GroqAPIKey != want.GroqAPIKey {

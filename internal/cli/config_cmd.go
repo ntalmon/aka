@@ -126,7 +126,6 @@ func runShowConfig(_ *cobra.Command, _ []string) error {
 	fmt.Println("AKA Configuration:")
 	fmt.Printf("  provider:       %s\n", cfg.Provider)
 	fmt.Printf("  model:          %s\n", cfg.Model)
-	fmt.Printf("  dry_run:        %v\n", cfg.DryRun)
 	fmt.Printf("  max_history:    %d\n", cfg.MaxHistory)
 
 	if cfg.AnthropicAPIKey != "" {

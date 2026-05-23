@@ -14,7 +14,6 @@ import (
 type Config struct {
 	Provider        string `toml:"provider" mapstructure:"provider"` // "anthropic" | "groq" | "openai" | "gemini" | "ollama"
 	Model           string `toml:"model" mapstructure:"model"`
-	DryRun          bool   `toml:"dry_run" mapstructure:"dry_run"`
 	MaxHistory      int    `toml:"max_history" mapstructure:"max_history"`
 	AnthropicAPIKey string `toml:"anthropic_api_key" mapstructure:"anthropic_api_key"`
 	GroqAPIKey      string `toml:"groq_api_key" mapstructure:"groq_api_key"`
@@ -50,7 +49,6 @@ func Load() (*Config, error) {
 	v := viper.New()
 	v.SetDefault("provider", "anthropic")
 	v.SetDefault("model", "claude-haiku-4-5-20251001")
-	v.SetDefault("dry_run", false)
 	v.SetDefault("max_history", 500)
 
 	v.SetConfigFile(path)
