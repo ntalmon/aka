@@ -36,18 +36,29 @@ Each step is a thin wrapper over its `internal/` package. The cobra subcommand i
 
 ### Key invariant: `aliases.sh` is never appended to
 
-`internal/aliases/WriteAliasesFile()` always does a **full rewrite** from `installed.json`, sorted by name, with a timestamped backup taken first. `apply.Apply()` and `aka undo` both go through this function. Never write to `aliases.sh` directly.
+`internal/aliases/WriteAliasesFile()` always does a **full rewrite** from `installed.json`, sorted by name, with a timestamped backup taken first. `apply.Apply()` and `aka delete` both go through this function. Never write to `aliases.sh` directly.
 
-### Runtime files (all under `~/.config/aka/`)
+### Runtime files
+
+Per-shell files live under `~/.config/aka/<shell>/` (e.g. `~/.config/aka/zsh/`):
 
 | File | Purpose |
 |---|---|
 | `aliases.sh` | The managed aliases/functions file; sourced by the user's shell |
 | `installed.json` | Source of truth — `InstalledEntry` records with metadata |
-| `config.toml` | User config — provider, model, API keys, max_history, dry_run |
+| `history_cursor.json` | Tracks last-seen history position |
+| `completion.sh` | Generated tab-completion script |
 | `backups/` | Timestamped snapshots before every write |
 
+Global (not per-shell):
+
+| File | Purpose |
+|---|---|
+| `~/.config/aka/config.toml` | User config — provider, model, API keys, max_history, dry_run |
+
 `config.toml` fields: `provider` ("anthropic" \| "groq" \| "openai" \| "gemini" \| "ollama"), `model`, `anthropic_api_key`, `groq_api_key`, `openai_api_key`, `gemini_api_key`, `dry_run`, `max_history`. API keys are stored here in plaintext — no env vars or OS keychain involved. Ollama requires no key.
+
+**Legacy migration**: `migrateFromLegacy()` in `aliases.go` transparently moves data from the old flat `~/.config/aka/` layout to `~/.config/aka/<shell>/` on first use.
 
 `max_history` (default 500) caps how many normalized entries are sent to the LLM. When the normalized count exceeds the limit, `ui.ChooseMaxHistory` prompts the user to continue with the current limit, send all entries for this run, or change the limit permanently (saved back to `config.toml`).
 
@@ -91,6 +102,16 @@ Supported providers and their model lists live in `internal/llm/models.go` (`Sup
 ### First-run / key setup
 
 `aka init` is the primary path: after shell wiring it automatically prompts for provider and API key if none is configured (via `ensureAPIKey()` in `internal/cli/scan.go`, shared with `aka scan`). `aka scan` calls the same helper as a fallback for users who skipped init. `aka config set-key [--provider <provider>]` does it interactively at any time. The provider's recommended default model is set automatically.
+
+### `aka delete`
+
+`aka delete <name>` removes a single AKA-managed alias or function by name. It detects the current shell via `detectCurrentShell()`, confirms the entry exists in `installed.json`, shows `[y/N]` confirmation, then calls `WriteAliasesFile` and `SaveInstalled` to atomically remove it. The shell wrapper auto-reloads `aliases.sh` after a successful `delete` (same as after `scan`).
+
+### Shell detection helpers (`internal/cli/shell.go`)
+
+Shared utilities used by `list`, `delete`, and other commands:
+- `detectCurrentShell()` — reads `$AKA_SHELL` first (set by the shell wrapper injected by `aka init`), falls back to parsing `$SHELL`. This is the canonical way to know which shell's data to read.
+- `requireShellInitialized(shell)` — checks that `~/.config/aka/<shell>/` exists; prints a friendly message and returns false if not. Callers should return nil when this returns false.
 
 ### `aka uninit`
 
