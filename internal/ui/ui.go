@@ -2,6 +2,7 @@
 package ui
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,12 +20,20 @@ import (
 )
 
 var (
-	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
-	addStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green
-	removeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))  // red
-	headerStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("12")) // blue
-	mutedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))  // gray
-	successStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))
+	titleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
+	addStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	removeStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	headerStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+	mutedStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	successStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))
+	labelStyle      = lipgloss.NewStyle().Bold(true)
+	aliasCodeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
+	successBarStyle = lipgloss.NewStyle().
+			BorderLeft(true).
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("10")).
+			PaddingLeft(1).
+			Foreground(lipgloss.Color("10"))
 )
 
 const asciiArt = `
@@ -38,7 +47,7 @@ const asciiArt = `
 // PrintBanner prints the AKA ASCII art banner.
 func PrintBanner() {
 	fmt.Println(titleStyle.Render(asciiArt))
-	fmt.Println(mutedStyle.Render("  also known as · your shell alias coach\n"))
+	fmt.Print("  ⚡ AKA — Your AI Shell Assistant\n\n")
 }
 
 // ReviewCensored renders a diff of original vs censored commands and asks the user how to proceed.
@@ -150,10 +159,7 @@ func editEntriesInEditor(entries []history.Entry) ([]history.Entry, error) {
 	return result, nil
 }
 
-const pageSize = 5
-
-// ReviewSuggestions presents suggestions in batches of pageSize with multi-select.
-// The user sees all details for the batch, then picks which to keep, then optionally continues.
+// ReviewSuggestions presents suggestions one at a time with a Y/n/e prompt.
 // Returns the accepted suggestions.
 func ReviewSuggestions(suggestions []llm.Suggestion) ([]llm.Suggestion, error) {
 	if len(suggestions) == 0 {
@@ -161,82 +167,54 @@ func ReviewSuggestions(suggestions []llm.Suggestion) ([]llm.Suggestion, error) {
 		return nil, nil
 	}
 
-	fmt.Println(titleStyle.Render(fmt.Sprintf("\n  %d suggestion(s) ready\n", len(suggestions))))
-
+	reader := bufio.NewReader(os.Stdin)
 	var accepted []llm.Suggestion
 
-	for start := 0; start < len(suggestions); {
-		end := start + pageSize
-		if end > len(suggestions) {
-			end = len(suggestions)
-		}
-		batch := suggestions[start:end]
-
-		for i, s := range batch {
-			printSuggestion(start+i+1, len(suggestions), s)
-		}
-
-		opts := make([]huh.Option[int], len(batch))
-		for i, s := range batch {
-			label := fmt.Sprintf("%-14s  [%s]  %s", sanitizeForDisplay(s.Name), strings.ToLower(s.Kind), sanitizeForDisplay(s.Template))
-			opts[i] = huh.NewOption(label, start+i).Selected(true)
-		}
-
-		var selected []int
-		form := huh.NewForm(
-			huh.NewGroup(
-				huh.NewMultiSelect[int]().
-					Title("Accept these? (space to toggle, enter to confirm)").
-					Options(opts...).
-					Value(&selected),
-			),
+	for i, s := range suggestions {
+		fmt.Printf("\n%s  %s\n",
+			labelStyle.Render(fmt.Sprintf("[%d] PATTERN FOUND:", i+1)),
+			sanitizeForDisplay(s.Template),
 		)
-		if err := form.Run(); err != nil {
-			if strings.Contains(err.Error(), "EOF") {
-				break
-			}
-			return accepted, err
-		}
+		fmt.Printf("   %s  %s\n",
+			labelStyle.Render("↳ SUGGESTED ALIAS:"),
+			aliasCodeStyle.Render("`"+sanitizeForDisplay(buildInvocation(s))+"`"),
+		)
+		fmt.Printf("\n   Accept suggestion? [Y/n/e] ")
 
-		keep := make(map[int]bool, len(selected))
-		for _, idx := range selected {
-			keep[idx] = true
-		}
-		for i, s := range batch {
-			if keep[start+i] {
-				accepted = append(accepted, s)
-				fmt.Println(successStyle.Render(fmt.Sprintf("  ✓ '%s'", s.Name)))
-			} else {
-				fmt.Println(mutedStyle.Render(fmt.Sprintf("  ✗ '%s'", s.Name)))
-			}
-		}
-		fmt.Println()
+		line, _ := reader.ReadString('\n')
+		choice := strings.ToLower(strings.TrimSpace(line))
 
-		start = end
-
-		if start < len(suggestions) {
-			remaining := len(suggestions) - start
-			var more bool
-			moreForm := huh.NewForm(
-				huh.NewGroup(
-					huh.NewConfirm().
-						Title(fmt.Sprintf("See %d more suggestion(s)?", remaining)).
-						Value(&more),
-				),
-			)
-			if err := moreForm.Run(); err != nil {
-				if strings.Contains(err.Error(), "EOF") {
-					break
-				}
-				return accepted, err
+		switch {
+		case choice == "" || strings.HasPrefix(choice, "y"):
+			accepted = append(accepted, s)
+			fmt.Println(successBarStyle.Render(fmt.Sprintf("✅ Alias %s accepted", sanitizeForDisplay(s.Name))))
+		case strings.HasPrefix(choice, "e"):
+			fmt.Printf("   New alias name [%s]: ", sanitizeForDisplay(s.Name))
+			newName, _ := reader.ReadString('\n')
+			newName = strings.TrimSpace(newName)
+			if newName != "" {
+				s.Name = newName
 			}
-			if !more {
-				break
-			}
+			accepted = append(accepted, s)
+			fmt.Println(successBarStyle.Render(fmt.Sprintf("✅ Alias %s accepted", sanitizeForDisplay(s.Name))))
+		default:
+			fmt.Println(mutedStyle.Render(fmt.Sprintf("   ✗ %s — skipped", sanitizeForDisplay(s.Name))))
 		}
 	}
 
 	return accepted, nil
+}
+
+func buildInvocation(s llm.Suggestion) string {
+	if len(s.Params) == 0 {
+		return s.Name
+	}
+	parts := make([]string, 0, len(s.Params)+1)
+	parts = append(parts, s.Name)
+	for i := range s.Params {
+		parts = append(parts, fmt.Sprintf("\"$%d\"", i+1))
+	}
+	return strings.Join(parts, " ")
 }
 
 // sanitizeForDisplay strips ASCII control characters (except tab and newline) to
@@ -248,34 +226,6 @@ func sanitizeForDisplay(s string) string {
 		}
 		return r
 	}, s)
-}
-
-// printSuggestion renders a single suggestion to stdout.
-func printSuggestion(idx, total int, s llm.Suggestion) {
-	fmt.Println(mutedStyle.Render(strings.Repeat("─", 54)))
-	fmt.Printf("%s  %s  %s\n",
-		titleStyle.Render(fmt.Sprintf("[%d/%d]", idx, total)),
-		titleStyle.Render(sanitizeForDisplay(s.Name)),
-		mutedStyle.Render("("+strings.ToLower(s.Kind)+")"),
-	)
-	fmt.Printf("  %s  %s\n", headerStyle.Render("Template:"), sanitizeForDisplay(s.Template))
-
-	if len(s.Params) > 0 {
-		fmt.Printf("  %s\n", headerStyle.Render("Parameters:"))
-		for _, p := range s.Params {
-			fmt.Printf("    $%s (%s) — %s\n", sanitizeForDisplay(p.Name), sanitizeForDisplay(p.Type), sanitizeForDisplay(p.Description))
-		}
-	}
-
-	fmt.Printf("  %s  %s\n", headerStyle.Render("Rationale:"), sanitizeForDisplay(s.Rationale))
-
-	if len(s.ExampleUses) > 0 {
-		fmt.Printf("  %s\n", headerStyle.Render("Examples:"))
-		for _, ex := range s.ExampleUses {
-			fmt.Printf("    $ %s\n", sanitizeForDisplay(ex))
-		}
-	}
-	fmt.Println()
 }
 
 // PromptProvider lets the user pick an LLM provider.
