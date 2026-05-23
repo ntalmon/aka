@@ -20,7 +20,23 @@ func NewListCmd() *cobra.Command {
 }
 
 func runList(_ *cobra.Command, _ []string) error {
-	entries, err := aliases.LoadInstalled()
+	shell := detectCurrentShell()
+	if shell == "" {
+		fmt.Println("Could not detect current shell.")
+		fmt.Println("Run 'aka init' to set up AKA for your shell.")
+		return nil
+	}
+	ok, err := requireShellInitialized(shell)
+	if err != nil {
+		return fmt.Errorf("check shell: %w", err)
+	}
+	if !ok {
+		fmt.Printf("Shell '%s' is not set up with AKA.\n", shell)
+		fmt.Printf("Run 'aka init --shell %s' to get started.\n", shell)
+		return nil
+	}
+
+	entries, err := aliases.LoadInstalled(shell)
 	if err != nil {
 		return fmt.Errorf("load installed: %w", err)
 	}

@@ -10,6 +10,8 @@ import (
 	"github.com/ntalmon/aka/aka-cli/internal/llm"
 )
 
+const testShell = "zsh"
+
 // setTempHome redirects all config paths to an isolated temp dir.
 func setTempHome(t *testing.T) {
 	t.Helper()
@@ -23,7 +25,7 @@ func TestApplyAddsNewEntries(t *testing.T) {
 		{Name: "gst", Kind: "alias", Template: "git status"},
 		{Name: "glo", Kind: "alias", Template: "git log --oneline"},
 	}
-	skipped, err := Apply(suggestions)
+	skipped, err := Apply(suggestions, testShell)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -31,7 +33,7 @@ func TestApplyAddsNewEntries(t *testing.T) {
 		t.Errorf("expected no skips, got %v", skipped)
 	}
 
-	installed, err := aliases.LoadInstalled()
+	installed, err := aliases.LoadInstalled(testShell)
 	if err != nil {
 		t.Fatalf("LoadInstalled: %v", err)
 	}
@@ -53,10 +55,10 @@ func TestApplySkipsInstalledNameConflict(t *testing.T) {
 	existing := []aliases.InstalledEntry{
 		{Name: "gst", Kind: "alias", Template: "git status", CreatedAt: time.Now(), Source: "scan"},
 	}
-	if err := aliases.SaveInstalled(existing); err != nil {
+	if err := aliases.SaveInstalled(existing, testShell); err != nil {
 		t.Fatalf("SaveInstalled: %v", err)
 	}
-	if err := aliases.WriteAliasesFile(existing); err != nil {
+	if err := aliases.WriteAliasesFile(existing, testShell); err != nil {
 		t.Fatalf("WriteAliasesFile: %v", err)
 	}
 
@@ -64,7 +66,7 @@ func TestApplySkipsInstalledNameConflict(t *testing.T) {
 		{Name: "gst", Kind: "alias", Template: "git status --short"},
 		{Name: "glo", Kind: "alias", Template: "git log --oneline"},
 	}
-	skipped, err := Apply(suggestions)
+	skipped, err := Apply(suggestions, testShell)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -72,7 +74,7 @@ func TestApplySkipsInstalledNameConflict(t *testing.T) {
 		t.Errorf("expected ['gst'] skipped, got %v", skipped)
 	}
 
-	installed, _ := aliases.LoadInstalled()
+	installed, _ := aliases.LoadInstalled(testShell)
 	if len(installed) != 2 {
 		t.Errorf("expected 2 total entries (1 pre-existing + 1 new), got %d", len(installed))
 	}
@@ -81,14 +83,14 @@ func TestApplySkipsInstalledNameConflict(t *testing.T) {
 func TestApplyNilSuggestions(t *testing.T) {
 	setTempHome(t)
 
-	skipped, err := Apply(nil)
+	skipped, err := Apply(nil, testShell)
 	if err != nil {
 		t.Fatalf("Apply(nil): %v", err)
 	}
 	if len(skipped) != 0 {
 		t.Errorf("expected no skips, got %v", skipped)
 	}
-	installed, _ := aliases.LoadInstalled()
+	installed, _ := aliases.LoadInstalled(testShell)
 	if len(installed) != 0 {
 		t.Errorf("expected 0 entries after empty apply, got %d", len(installed))
 	}
@@ -100,11 +102,11 @@ func TestApplyWritesAliasesFile(t *testing.T) {
 	suggestions := []llm.Suggestion{
 		{Name: "dps", Kind: "alias", Template: "docker ps"},
 	}
-	if _, err := Apply(suggestions); err != nil {
+	if _, err := Apply(suggestions, testShell); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
-	path, err := aliases.AliasesFilePath()
+	path, err := aliases.AliasesFilePath(testShell)
 	if err != nil {
 		t.Fatalf("AliasesFilePath: %v", err)
 	}
@@ -123,10 +125,10 @@ func TestApplySetsSourceToScan(t *testing.T) {
 	suggestions := []llm.Suggestion{
 		{Name: "gco", Kind: "function", Template: `git checkout "$1"`},
 	}
-	if _, err := Apply(suggestions); err != nil {
+	if _, err := Apply(suggestions, testShell); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	installed, _ := aliases.LoadInstalled()
+	installed, _ := aliases.LoadInstalled(testShell)
 	if len(installed) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(installed))
 	}
@@ -143,14 +145,14 @@ func TestApplyPreventsDuplicateWithinBatch(t *testing.T) {
 		{Name: "gst", Kind: "alias", Template: "git status"},
 		{Name: "gst", Kind: "alias", Template: "git status -s"},
 	}
-	skipped, err := Apply(suggestions)
+	skipped, err := Apply(suggestions, testShell)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	if len(skipped) != 1 || skipped[0] != "gst" {
 		t.Errorf("expected second 'gst' to be skipped, got %v", skipped)
 	}
-	installed, _ := aliases.LoadInstalled()
+	installed, _ := aliases.LoadInstalled(testShell)
 	if len(installed) != 1 {
 		t.Errorf("expected 1 entry (first wins), got %d", len(installed))
 	}

@@ -2,10 +2,8 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -17,7 +15,6 @@ import (
 	"github.com/ntalmon/aka/aka-cli/internal/history"
 	"github.com/ntalmon/aka/aka-cli/internal/llm"
 	"github.com/ntalmon/aka/aka-cli/internal/normalize"
-	"github.com/ntalmon/aka/aka-cli/internal/suggest"
 	"github.com/ntalmon/aka/aka-cli/internal/ui"
 )
 
@@ -30,7 +27,6 @@ func NewScanCmd() *cobra.Command {
 the Anthropic API to suggest useful shell aliases and functions.`,
 		RunE: runScan,
 	}
-	cmd.Flags().Bool("dry-run", false, "Print the censored request body and exit without making an API call")
 	cmd.Flags().Int("history", 0, "Max number of history entries to use (0 = use config default)")
 	cmd.Flags().Bool("full-history", false, "Ignore the history cursor and scan the full history")
 	return cmd
@@ -42,15 +38,24 @@ const minNewEntries = 100
 func runScan(cmd *cobra.Command, _ []string) error {
 	ui.PrintBanner()
 
-	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	historyN, _ := cmd.Flags().GetInt("history")
 	fullHistory, _ := cmd.Flags().GetBool("full-history")
 
-	// Also check parent persistent flag.
-	if !dryRun {
-		if v, err := cmd.Root().PersistentFlags().GetBool("dry-run"); err == nil {
-			dryRun = v
-		}
+	// Detect current shell and verify it has been initialized.
+	shell := detectCurrentShell()
+	if shell == "" {
+		fmt.Println("Could not detect current shell.")
+		fmt.Println("Run 'aka init' to set up AKA for your shell.")
+		return nil
+	}
+	ok, err := requireShellInitialized(shell)
+	if err != nil {
+		return fmt.Errorf("check shell: %w", err)
+	}
+	if !ok {
+		fmt.Printf("Shell '%s' is not set up with AKA.\n", shell)
+		fmt.Printf("Run 'aka init --shell %s' to get started.\n", shell)
+		return nil
 	}
 
 	// Load config.
@@ -64,32 +69,25 @@ func runScan(cmd *cobra.Command, _ []string) error {
 		maxHistory = historyN
 	}
 
-	// Step 1: Check/get API key (unless dry-run; Ollama needs no key).
-	var apiKey string
-	if !dryRun {
-		if err := ensureAPIKey(cfg); err != nil {
-			return err
-		}
-		apiKey = apiKeyForProvider(cfg)
+	// Step 1: Check/get API key (Ollama needs no key).
+	if err := ensureAPIKey(cfg); err != nil {
+		return err
 	}
+	apiKey := apiKeyForProvider(cfg)
 
-	// Step 2: Read history.
-	fmt.Println("Reading shell history...")
+	// Step 2: Read history for the current shell.
 	if historyN > 0 {
 		fmt.Printf("  Custom limit: %d (--history flag)\n", historyN)
 	}
-	shellEnv := os.Getenv("SHELL")
-	shellName := detectShellName(shellEnv)
-	entries, err := history.ReadAll(shellName)
+	entries, err := history.ReadAll(shell)
 	if err != nil {
 		return fmt.Errorf("read history: %w", err)
 	}
 	totalRaw := len(entries)
-	fmt.Printf("  Read %d raw commands\n", totalRaw)
 
-	// Apply history cursor unless --full-history is set or this is a dry-run.
-	if !fullHistory && !dryRun {
-		cursor, _ := config.LoadCursor()
+	// Apply history cursor unless --full-history is set.
+	if !fullHistory {
+		cursor, _ := config.LoadCursor(shell)
 		if cursor.Total > 0 {
 			newCount := totalRaw - cursor.Total
 			if newCount < 0 {
@@ -115,29 +113,23 @@ func runScan(cmd *cobra.Command, _ []string) error {
 
 	// Step 3: Normalize.
 	normalized := normalize.Normalize(entries)
-	fmt.Printf("  %d commands after normalization\n", len(normalized))
 
 	// Limit to maxHistory.
 	if maxHistory > 0 && len(normalized) > maxHistory {
-		if dryRun {
-			normalized = normalized[len(normalized)-maxHistory:]
-			fmt.Printf("  Capped to %d most recent (max_history limit)\n", maxHistory)
-		} else {
-			chosenLimit, save, err := ui.ChooseMaxHistory(maxHistory, len(normalized))
-			if err != nil {
-				return fmt.Errorf("choose max history: %w", err)
-			}
-			if save {
-				cfg.MaxHistory = chosenLimit
-				if saveErr := config.Save(cfg); saveErr != nil {
-					fmt.Printf("Warning: could not save config: %v\n", saveErr)
-				}
-			}
-			if chosenLimit > 0 && len(normalized) > chosenLimit {
-				normalized = normalized[len(normalized)-chosenLimit:]
-			}
-			fmt.Printf("  Sending %d commands\n", len(normalized))
+		chosenLimit, save, err := ui.ChooseMaxHistory(maxHistory, len(normalized))
+		if err != nil {
+			return fmt.Errorf("choose max history: %w", err)
 		}
+		if save {
+			cfg.MaxHistory = chosenLimit
+			if saveErr := config.Save(cfg); saveErr != nil {
+				fmt.Printf("Warning: could not save config: %v\n", saveErr)
+			}
+		}
+		if chosenLimit > 0 && len(normalized) > chosenLimit {
+			normalized = normalized[len(normalized)-chosenLimit:]
+		}
+		fmt.Printf("  Sending %d commands\n", len(normalized))
 	}
 
 	if len(normalized) == 0 {
@@ -145,27 +137,20 @@ func runScan(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Step 4: Censor.
-	censored, redactionMap := censor.CensorAll(normalized)
-	fmt.Printf("  %d redactions applied\n", len(redactionMap))
+	censored, _ := censor.CensorAll(normalized)
 
-	// Step 5: Show censored diff and ask for confirmation (skip in dry-run).
-	if !dryRun {
-		censored, err = ui.ReviewCensored(normalized, censored)
-		if err != nil {
-			return fmt.Errorf("censor review: %w", err)
-		}
-		if censored == nil {
-			fmt.Println("Aborted — no data sent.")
-			return nil
-		}
+	// Step 5: Show censored diff and ask for confirmation.
+	censored, err = ui.ReviewCensored(normalized, censored)
+	if err != nil {
+		return fmt.Errorf("censor review: %w", err)
+	}
+	if censored == nil {
+		fmt.Println("Aborted — no data sent.")
+		return nil
 	}
 
-	// Step 6: If dry-run, print request body and exit.
-	if dryRun {
-		return printDryRun(cfg.Model, censored)
-	}
-
-	// Step 7: Call LLM.
+	// Step 6: Call LLM.
+	fmt.Printf("🧠 Analyzing last %d commands for patterns...\n", len(censored))
 	provider := buildProvider(cfg, apiKey)
 	suggestions, err := provider.Suggest(context.Background(), censored)
 	for {
@@ -180,21 +165,21 @@ func runScan(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("LLM suggest: %w", err)
 	}
-	fmt.Printf("  Got %d suggestion(s)\n", len(suggestions))
 
 	// Filter out suggestions whose names already exist in installed aliases or shell config files.
-	suggestions = filterExistingSuggestions(suggestions)
+	suggestions = filterExistingSuggestions(suggestions, shell)
 	if len(suggestions) == 0 {
 		fmt.Println("All suggestions already exist as aliases or functions — nothing new to apply.")
 		return nil
 	}
+	fmt.Printf("\n✨ Discovered %d potential productivity enhancements!\n", len(suggestions))
 
 	// Persist cursor so the next run only processes new commands.
 	if !fullHistory {
-		_ = config.SaveCursor(config.HistoryCursor{Total: totalRaw})
+		_ = config.SaveCursor(config.HistoryCursor{Total: totalRaw}, shell)
 	}
 
-	// Step 8: Interactive review.
+	// Step 7: Interactive review.
 	accepted, err := ui.ReviewSuggestions(suggestions)
 	if err != nil {
 		return fmt.Errorf("review suggestions: %w", err)
@@ -205,8 +190,8 @@ func runScan(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	// Step 9: Apply accepted suggestions.
-	skipped, err := apply.Apply(accepted)
+	// Step 8: Apply accepted suggestions.
+	skipped, err := apply.Apply(accepted, shell)
 	if err != nil {
 		return fmt.Errorf("apply: %w", err)
 	}
@@ -215,15 +200,15 @@ func runScan(cmd *cobra.Command, _ []string) error {
 		fmt.Printf("\nSkipped (name conflicts): %s\n", strings.Join(skipped, ", "))
 	}
 
-	aliasesPath, _ := config.GetAliasesPath()
+	aliasesPath, _ := config.GetAliasesPath(shell)
 	ui.PrintSuccess(fmt.Sprintf("\n✓ Applied %d alias(es)/function(s)!", len(accepted)-len(skipped)))
 	fmt.Printf("  Written to: %s\n", aliasesPath)
-	fmt.Println("  Aliases reloaded in current shell (or run: source ~/.config/aka/aliases.sh)")
+	fmt.Printf("  Aliases reloaded in current shell (or run: source ~/.config/aka/%s/aliases.sh)\n", shell)
 	return nil
 }
 
-func filterExistingSuggestions(suggestions []llm.Suggestion) []llm.Suggestion {
-	installed, _ := aliases.LoadInstalled()
+func filterExistingSuggestions(suggestions []llm.Suggestion, shell string) []llm.Suggestion {
+	installed, _ := aliases.LoadInstalled(shell)
 	known := make(map[string]bool, len(installed))
 	for _, e := range installed {
 		known[e.Name] = true
@@ -246,17 +231,6 @@ func filterExistingSuggestions(suggestions []llm.Suggestion) []llm.Suggestion {
 		fmt.Printf("  Filtered %d already-defined: %s\n", len(skipped), strings.Join(skipped, ", "))
 	}
 	return filtered
-}
-
-func detectShellName(shellPath string) string {
-	switch {
-	case strings.Contains(shellPath, "zsh"):
-		return "zsh"
-	case strings.Contains(shellPath, "bash"):
-		return "bash"
-	default:
-		return ""
-	}
 }
 
 // ensureAPIKey prompts for a provider and API key if none is configured, then saves.
@@ -324,54 +298,15 @@ func buildProvider(cfg *config.Config, apiKey string) llm.Provider {
 		if model == "claude-haiku-4-5-20251001" {
 			model = llm.DefaultGroqModel
 		}
-		fmt.Printf("\nCalling Groq API (%s)...\n", model)
 		return llm.NewGroq(apiKey).WithModel(model)
 	case "openai":
-		fmt.Printf("\nCalling OpenAI API (%s)...\n", model)
 		return llm.NewOpenAI(apiKey).WithModel(model)
 	case "gemini":
-		fmt.Printf("\nCalling Google Gemini API (%s)...\n", model)
 		return llm.NewGemini(apiKey).WithModel(model)
 	case "ollama":
-		fmt.Printf("\nCalling Ollama (%s)...\n", model)
 		return llm.NewOllama(model)
 	default: // anthropic
-		fmt.Printf("\nCalling Anthropic API (%s)...\n", model)
 		return llm.New(apiKey).WithModel(model)
 	}
 }
 
-func printDryRun(model string, censored []history.Entry) error {
-	prompt := suggest.BuildPrompt(censored)
-	toolSchema, err := suggest.ToolSchema()
-	if err != nil {
-		return err
-	}
-
-	reqBody := map[string]interface{}{
-		"model":      model,
-		"max_tokens": 4096,
-		"system": []map[string]interface{}{
-			{"type": "text", "text": "[system prompt — see llm/anthropic.go]", "cache_control": map[string]string{"type": "ephemeral"}},
-		},
-		"tools": []map[string]interface{}{
-			{
-				"name":         "suggest_aliases",
-				"description":  "Suggest shell aliases and functions based on command history patterns.",
-				"input_schema": toolSchema,
-			},
-		},
-		"tool_choice": map[string]string{"type": "tool", "name": "suggest_aliases"},
-		"messages": []map[string]interface{}{
-			{"role": "user", "content": prompt},
-		},
-	}
-
-	data, err := json.MarshalIndent(reqBody, "", "  ")
-	if err != nil {
-		return err
-	}
-	fmt.Println("=== DRY RUN: Request Body ===")
-	fmt.Println(string(data))
-	return nil
-}

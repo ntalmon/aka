@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	// reWrapper matches the aka() shell wrapper block added by `aka init`.
+	// reWrapper matches the aka() shell wrapper block added by `aka init` (any shell variant).
 	reWrapper = regexp.MustCompile("(?s)\n# Added by aka init[^\n]*\naka\\(\\) \\{.*?\n\\}\n")
 	// reAliasSource matches the aliases.sh source line and its comment.
 	reAliasSource = regexp.MustCompile("\n# Added by `aka init` — single source[^\n]*\n[^\n]*aliases\\.sh[^\n]*\n")
@@ -24,16 +24,22 @@ func NewUninitCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "uninit",
 		Short: "Remove AKA from your shell and delete all config and aliases",
-		Long: `aka uninit removes everything aka init added to your shell RC file and
-deletes ~/.config/aka/ (aliases, config, history cursor, backups).
+		Long: `aka uninit removes the current shell's aka init wiring from your RC file
+and deletes ~/.config/aka/<shell>/ (aliases, history cursor).
 
+If no other shells remain, ~/.config/aka/ (including config.toml) is also removed.
 The aka binary itself is not removed.`,
 		RunE: runUninit,
 	}
 }
 
 func runUninit(_ *cobra.Command, _ []string) error {
-	_, rcFile, err := detectShell()
+	shell := detectCurrentShell()
+	if shell == "" {
+		return fmt.Errorf("could not detect current shell — set AKA_SHELL or SHELL")
+	}
+
+	rcFile, err := rcFileForShell(shell)
 	if err != nil {
 		return err
 	}
@@ -53,12 +59,12 @@ func runUninit(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	configDir := filepath.Join(home, ".config", "aka")
-	_, statErr := os.Stat(configDir)
-	hasConfigDir := statErr == nil
+	shellDir := filepath.Join(home, ".config", "aka", shell)
+	_, statErr := os.Stat(shellDir)
+	hasShellDir := statErr == nil
 
-	if !hasAnyRC && !hasConfigDir {
-		fmt.Println("Nothing to remove — AKA does not appear to be initialized.")
+	if !hasAnyRC && !hasShellDir {
+		fmt.Printf("Nothing to remove — AKA does not appear to be initialized for %s.\n", shell)
 		return nil
 	}
 
@@ -72,8 +78,15 @@ func runUninit(_ *cobra.Command, _ []string) error {
 	if hasCompletion {
 		fmt.Printf("  • completion.sh source line in %s\n", rcFile)
 	}
-	if hasConfigDir {
-		fmt.Printf("  • %s/ (aliases, config, history cursor, backups)\n", configDir)
+	if hasShellDir {
+		fmt.Printf("  • %s/ (aliases, history cursor)\n", shellDir)
+	}
+
+	// Check if removing this shell dir would leave the global dir empty.
+	globalDir := filepath.Join(home, ".config", "aka")
+	otherShellsExist := otherShellDirsExist(globalDir, shell)
+	if !otherShellsExist {
+		fmt.Printf("  • %s/ (config.toml — last shell removed)\n", globalDir)
 	}
 
 	fmt.Print("\nContinue? [y/N] ")
@@ -94,13 +107,36 @@ func runUninit(_ *cobra.Command, _ []string) error {
 		fmt.Printf("✓ Removed aka blocks from %s\n", rcFile)
 	}
 
-	if hasConfigDir {
-		if err := os.RemoveAll(configDir); err != nil {
-			return fmt.Errorf("remove %s: %w", configDir, err)
+	if hasShellDir {
+		if err := os.RemoveAll(shellDir); err != nil {
+			return fmt.Errorf("remove %s: %w", shellDir, err)
 		}
-		fmt.Printf("✓ Deleted %s/\n", configDir)
+		fmt.Printf("✓ Deleted %s/\n", shellDir)
+	}
+
+	if !otherShellsExist {
+		if err := os.RemoveAll(globalDir); err != nil {
+			return fmt.Errorf("remove %s: %w", globalDir, err)
+		}
+		fmt.Printf("✓ Deleted %s/\n", globalDir)
 	}
 
 	fmt.Printf("\nDone. Reload your shell to clear the aka() wrapper: source %s\n", rcFile)
 	return nil
+}
+
+// otherShellDirsExist reports whether any shell subdirectory other than currentShell
+// exists inside configBaseDir.
+func otherShellDirsExist(configBaseDir, currentShell string) bool {
+	entries, err := os.ReadDir(configBaseDir)
+	if err != nil {
+		return false
+	}
+	knownShells := map[string]bool{"bash": true, "zsh": true, "fish": true}
+	for _, e := range entries {
+		if e.IsDir() && knownShells[e.Name()] && e.Name() != currentShell {
+			return true
+		}
+	}
+	return false
 }

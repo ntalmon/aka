@@ -15,19 +15,26 @@ import (
 
 // NewInitCmd creates the `aka init` subcommand.
 func NewInitCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize AKA: create aliases.sh and add source line to your shell rc",
-		Long: `aka init creates ~/.config/aka/aliases.sh and appends a single source line
-to your shell's rc file (.zshrc or .bashrc). This is idempotent — safe to run multiple times.
+		Long: `aka init creates ~/.config/aka/<shell>/aliases.sh and appends a shell wrapper
+and source line to your shell's rc file (.zshrc or .bashrc). This is safe to re-run —
+if the shell is already initialized it will tell you.
 
-Fish shell is not supported in v0.1.`,
+Fish shell is not supported in v0.1.
+
+Use --shell to explicitly target a shell (default: detected from $SHELL).`,
 		RunE: runInit,
 	}
+	cmd.Flags().String("shell", "", "Shell to initialize (bash or zsh; default: detected from $SHELL)")
+	return cmd
 }
 
-func runInit(_ *cobra.Command, _ []string) error {
-	shell, rcFile, err := detectShell()
+func runInit(cmd *cobra.Command, _ []string) error {
+	shellFlag, _ := cmd.Flags().GetString("shell")
+
+	shell, rcFile, err := resolveInitShell(shellFlag)
 	if err != nil {
 		return err
 	}
@@ -39,11 +46,24 @@ func runInit(_ *cobra.Command, _ []string) error {
 	fmt.Printf("Detected shell: %s\n", shell)
 	fmt.Printf("RC file: %s\n", rcFile)
 
-	if err := aliases.Init(rcFile); err != nil {
+	// Check if already initialized.
+	ok, err := isShellInitialized(shell)
+	if err != nil {
+		return fmt.Errorf("check shell: %w", err)
+	}
+	if ok {
+		aliasesPath, _ := aliases.AliasesFilePath(shell)
+		fmt.Printf("Shell '%s' is already initialized.\n", shell)
+		fmt.Printf("  Aliases file: %s\n", aliasesPath)
+		fmt.Println("Run 'aka scan' to generate aliases.")
+		return nil
+	}
+
+	if err := aliases.Init(rcFile, shell); err != nil {
 		return fmt.Errorf("init: %w", err)
 	}
 
-	aliasesPath, err := aliases.AliasesFilePath()
+	aliasesPath, err := aliases.AliasesFilePath(shell)
 	if err != nil {
 		return err
 	}
@@ -59,7 +79,7 @@ func runInit(_ *cobra.Command, _ []string) error {
 		if err := aliases.InitCompletion(shell, rcFile); err != nil {
 			return fmt.Errorf("init completion: %w", err)
 		}
-		completionPath, err = aliases.CompletionFilePath()
+		completionPath, err = aliases.CompletionFilePath(shell)
 		if err != nil {
 			return err
 		}
@@ -90,47 +110,36 @@ func runInit(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-// detectShell determines the shell and returns (shell, rcFilePath, error).
-func detectShell() (string, string, error) {
+// resolveInitShell returns the shell and RC file path for the init command.
+// If shellOverride is non-empty it is used directly; otherwise the shell is
+// detected from $SHELL with a file-existence fallback.
+func resolveInitShell(shellOverride string) (shell, rcFile string, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", "", err
 	}
 
-	shellEnv := os.Getenv("SHELL")
-	var shell string
-	switch {
-	case strings.Contains(shellEnv, "zsh"):
-		shell = "zsh"
-	case strings.Contains(shellEnv, "bash"):
-		shell = "bash"
-	case strings.Contains(shellEnv, "fish"):
-		shell = "fish"
-	default:
-		// Try to guess by looking at which rc file exists.
-		if _, err := os.Stat(filepath.Join(home, ".zshrc")); err == nil {
+	if shellOverride != "" {
+		shell = strings.ToLower(shellOverride)
+	} else {
+		shellEnv := os.Getenv("SHELL")
+		switch {
+		case strings.Contains(shellEnv, "zsh"):
 			shell = "zsh"
-		} else {
+		case strings.Contains(shellEnv, "bash"):
 			shell = "bash"
-		}
-	}
-
-	var rcFile string
-	switch shell {
-	case "zsh":
-		rcFile = filepath.Join(home, ".zshrc")
-	case "bash":
-		// Prefer .bash_profile on macOS, .bashrc on Linux.
-		rcFile = filepath.Join(home, ".bashrc")
-		if _, err := os.Stat(filepath.Join(home, ".bash_profile")); err == nil {
-			// Use .bash_profile only if .bashrc doesn't exist.
-			if _, err2 := os.Stat(rcFile); os.IsNotExist(err2) {
-				rcFile = filepath.Join(home, ".bash_profile")
+		case strings.Contains(shellEnv, "fish"):
+			shell = "fish"
+		default:
+			// Fallback: check which rc file exists.
+			if _, err := os.Stat(filepath.Join(home, ".zshrc")); err == nil {
+				shell = "zsh"
+			} else {
+				shell = "bash"
 			}
 		}
-	default:
-		rcFile = filepath.Join(home, ".bashrc")
 	}
 
-	return shell, rcFile, nil
+	rcFile, err = rcFileForShell(shell)
+	return shell, rcFile, err
 }

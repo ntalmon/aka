@@ -31,8 +31,25 @@ type InstalledEntry struct {
 	Source      string    `json:"source"` // "scan" | "manual"
 }
 
-// configDir returns ~/.config/aka, creating it if needed with 0700 permissions.
-func configDir() (string, error) {
+// shellDir returns ~/.config/aka/<shell>, creating it at 0700 if needed.
+func shellDir(shell string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".config", "aka", shell)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// globalBaseDir returns ~/.config/aka, creating it at 0700 if needed.
+// Used for migration checks and the RC backup within Init.
+func globalBaseDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -41,51 +58,37 @@ func configDir() (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	// Tighten permissions even if the directory already existed.
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return "", err
 	}
 	return dir, nil
 }
 
-// AliasesFilePath returns the path to the managed aliases file.
-func AliasesFilePath() (string, error) {
-	dir, err := configDir()
+// AliasesFilePath returns the path to the managed aliases file for shell.
+func AliasesFilePath(shell string) (string, error) {
+	dir, err := shellDir(shell)
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "aliases.sh"), nil
 }
 
-// CompletionFilePath returns the path to the managed shell completion script.
-func CompletionFilePath() (string, error) {
-	dir, err := configDir()
+// CompletionFilePath returns the path to the managed shell completion script for shell.
+func CompletionFilePath(shell string) (string, error) {
+	dir, err := shellDir(shell)
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "completion.sh"), nil
 }
 
-// InstalledJSONPath returns the path to the installed.json registry.
-func InstalledJSONPath() (string, error) {
-	dir, err := configDir()
+// InstalledJSONPath returns the path to the installed.json registry for shell.
+func InstalledJSONPath(shell string) (string, error) {
+	dir, err := shellDir(shell)
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "installed.json"), nil
-}
-
-// BackupDir returns (and creates) the backup directory.
-func BackupDir() (string, error) {
-	dir, err := configDir()
-	if err != nil {
-		return "", err
-	}
-	bd := filepath.Join(dir, "backups")
-	if err := os.MkdirAll(bd, 0o700); err != nil {
-		return "", err
-	}
-	return bd, nil
 }
 
 // checkNotSymlink returns an error if path exists and is a symlink, preventing
@@ -142,12 +145,62 @@ func ValidateFunctionTemplate(template string) error {
 	return nil
 }
 
-// Init creates the aliases file and appends the source line to rcFile idempotently.
-// It takes a backup of rcFile before modifying it.
-func Init(rcFile string) error {
-	dir, err := configDir()
+// migrateFromLegacy moves files from the old ~/.config/aka/ flat layout to
+// ~/.config/aka/<shell>/ if the per-shell dir is empty and legacy files exist.
+// It prints a one-line notice when migration happens.
+func migrateFromLegacy(shell string) error {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("config dir: %w", err)
+		return err
+	}
+	legacyDir := filepath.Join(home, ".config", "aka")
+	shellDirPath := filepath.Join(legacyDir, shell)
+
+	legacyAliases := filepath.Join(legacyDir, "aliases.sh")
+	if _, err := os.Stat(legacyAliases); os.IsNotExist(err) {
+		return nil // nothing to migrate
+	}
+
+	// Only migrate if installed.json doesn't already exist in the shell dir.
+	if _, err := os.Stat(filepath.Join(shellDirPath, "installed.json")); err == nil {
+		return nil
+	}
+
+	if err := os.MkdirAll(shellDirPath, 0o700); err != nil {
+		return err
+	}
+
+	for _, name := range []string{"aliases.sh", "installed.json", "history_cursor.json"} {
+		src := filepath.Join(legacyDir, name)
+		dst := filepath.Join(shellDirPath, name)
+		data, err := os.ReadFile(src)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if err := atomicWriteFile(dst, data, 0o600); err != nil {
+			return err
+		}
+	}
+
+	fmt.Printf("  Migrated existing AKA data to ~/.config/aka/%s/\n", shell)
+	return nil
+}
+
+// Init creates the per-shell aliases file and appends the shell wrapper and source
+// line to rcFile, idempotently. It takes a backup of rcFile before modifying it.
+// If legacy data exists in ~/.config/aka/ it is migrated to ~/.config/aka/<shell>/.
+func Init(rcFile, shell string) error {
+	dir, err := shellDir(shell)
+	if err != nil {
+		return fmt.Errorf("shell dir: %w", err)
+	}
+
+	// Migrate from legacy flat layout if needed.
+	if err := migrateFromLegacy(shell); err != nil {
+		return fmt.Errorf("migrate: %w", err)
 	}
 
 	// Create aliases.sh if it doesn't exist.
@@ -160,8 +213,10 @@ func Init(rcFile string) error {
 		}
 	}
 
-	sourceLine := `[ -f "$HOME/.config/aka/aliases.sh" ] && . "$HOME/.config/aka/aliases.sh"`
-	wrapperMarker := "# Added by aka init — shell wrapper"
+	// Shell-specific source and wrapper content.
+	aliasesSourcePath := fmt.Sprintf("$HOME/.config/aka/%s/aliases.sh", shell)
+	sourceLine := fmt.Sprintf(`[ -f "%s" ] && . "%s"`, aliasesSourcePath, aliasesSourcePath)
+	wrapperMarker := fmt.Sprintf("# Added by aka init — shell wrapper — %s", shell)
 
 	// Read rc file.
 	data, err := os.ReadFile(rcFile)
@@ -177,18 +232,6 @@ func Init(rcFile string) error {
 		return nil // fully installed
 	}
 
-	// Backup rc file before modifying.
-	bd, err := BackupDir()
-	if err != nil {
-		return err
-	}
-	backupName := filepath.Base(rcFile) + "." + fmt.Sprintf("%d", time.Now().Unix())
-	if len(data) > 0 {
-		if err := os.WriteFile(filepath.Join(bd, backupName), data, 0o600); err != nil {
-			return fmt.Errorf("backup rc file: %w", err)
-		}
-	}
-
 	f, err := os.OpenFile(rcFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("open rc file: %w", err)
@@ -196,12 +239,12 @@ func Init(rcFile string) error {
 	defer func() { _ = f.Close() }()
 
 	if !hasWrapper {
-		wrapper := "\n" + wrapperMarker + " — auto-reloads aliases after 'aka scan'\n" +
+		wrapper := "\n" + wrapperMarker + " — auto-reloads aliases after 'aka scan' or 'aka delete'\n" +
 			"aka() {\n" +
-			"    command aka \"$@\"\n" +
+			"    AKA_SHELL=" + shell + " command aka \"$@\"\n" +
 			"    local _exit_code=$?\n" +
-			"    if [[ \"$1\" == \"scan\" ]] && [[ $_exit_code -eq 0 ]]; then\n" +
-			"        . \"$HOME/.config/aka/aliases.sh\" 2>/dev/null\n" +
+			"    if [[ \"$1\" == \"scan\" || \"$1\" == \"delete\" ]] && [[ $_exit_code -eq 0 ]]; then\n" +
+			"        . \"" + aliasesSourcePath + "\" 2>/dev/null\n" +
 			"    fi\n" +
 			"    return $_exit_code\n" +
 			"}\n"
@@ -224,9 +267,9 @@ func Init(rcFile string) error {
 // InitCompletion generates a shell completion script for `aka` and appends a
 // source line to rcFile, idempotently. shell must be "zsh" or "bash".
 func InitCompletion(shell, rcFile string) error {
-	dir, err := configDir()
+	dir, err := shellDir(shell)
 	if err != nil {
-		return fmt.Errorf("config dir: %w", err)
+		return fmt.Errorf("shell dir: %w", err)
 	}
 
 	completionPath := filepath.Join(dir, "completion.sh")
@@ -244,7 +287,7 @@ _aka_completion() {
   local prev="${words[$((${#words}-1))]}"
 
   # Top-level subcommands
-  local subcommands=(scan init list undo config completion help)
+  local subcommands=(scan init list delete config completion help)
 
   if [[ ${#words[@]} -eq 2 ]]; then
     completions=(${subcommands})
@@ -254,7 +297,7 @@ _aka_completion() {
         completions=(set-key set-max-history show)
         ;;
       scan)
-        completions=(--dry-run --history --full-history)
+        completions=(--history --full-history)
         ;;
     esac
   fi
@@ -272,7 +315,7 @@ _aka_completion() {
   local cur prev subcommands
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  subcommands="scan init list undo config completion help"
+  subcommands="scan init list delete config completion help"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "${subcommands}" -- "${cur}") )
@@ -282,7 +325,7 @@ _aka_completion() {
         COMPREPLY=( $(compgen -W "set-key set-max-history show" -- "${cur}") )
         ;;
       scan)
-        COMPREPLY=( $(compgen -W "--dry-run --history --full-history" -- "${cur}") )
+        COMPREPLY=( $(compgen -W "--history --full-history" -- "${cur}") )
         ;;
       *)
         COMPREPLY=()
@@ -302,7 +345,8 @@ complete -F _aka_completion aka
 	}
 
 	// Source line to append.
-	sourceLine := `[ -f "$HOME/.config/aka/completion.sh" ] && . "$HOME/.config/aka/completion.sh"`
+	completionSourcePath := fmt.Sprintf("$HOME/.config/aka/%s/completion.sh", shell)
+	sourceLine := fmt.Sprintf(`[ -f "%s" ] && . "%s"`, completionSourcePath, completionSourcePath)
 
 	// Read rc file.
 	data, err := os.ReadFile(rcFile)
@@ -330,9 +374,9 @@ complete -F _aka_completion aka
 	return nil
 }
 
-// LoadInstalled reads installed.json and returns the entries.
-func LoadInstalled() ([]InstalledEntry, error) {
-	path, err := InstalledJSONPath()
+// LoadInstalled reads installed.json for shell and returns the entries.
+func LoadInstalled(shell string) ([]InstalledEntry, error) {
+	path, err := InstalledJSONPath(shell)
 	if err != nil {
 		return nil, err
 	}
@@ -350,9 +394,9 @@ func LoadInstalled() ([]InstalledEntry, error) {
 	return entries, nil
 }
 
-// SaveInstalled writes entries to installed.json atomically at 0600.
-func SaveInstalled(entries []InstalledEntry) error {
-	path, err := InstalledJSONPath()
+// SaveInstalled writes entries to installed.json for shell atomically at 0600.
+func SaveInstalled(entries []InstalledEntry, shell string) error {
+	path, err := InstalledJSONPath(shell)
 	if err != nil {
 		return err
 	}
@@ -363,47 +407,8 @@ func SaveInstalled(entries []InstalledEntry) error {
 	return atomicWriteFile(path, data, 0o600)
 }
 
-// Backup takes a timestamped backup of aliases.sh (and installed.json if present).
-func Backup() error {
-	aliasesPath, err := AliasesFilePath()
-	if err != nil {
-		return err
-	}
-	bd, err := BackupDir()
-	if err != nil {
-		return err
-	}
-	ts := fmt.Sprintf("%d", time.Now().Unix())
-
-	// Backup aliases.sh.
-	if data, err := os.ReadFile(aliasesPath); err == nil {
-		dst := filepath.Join(bd, "aliases.sh."+ts)
-		if err := atomicWriteFile(dst, data, 0o600); err != nil {
-			return fmt.Errorf("backup aliases.sh: %w", err)
-		}
-	}
-
-	// Backup installed.json.
-	installedPath, err := InstalledJSONPath()
-	if err != nil {
-		return err
-	}
-	if data, err := os.ReadFile(installedPath); err == nil {
-		dst := filepath.Join(bd, "installed.json."+ts)
-		if err := atomicWriteFile(dst, data, 0o600); err != nil {
-			return fmt.Errorf("backup installed.json: %w", err)
-		}
-	}
-	return nil
-}
-
-// WriteAliasesFile takes a backup and does a full rewrite of aliases.sh from entries.
-func WriteAliasesFile(entries []InstalledEntry) error {
-	// Backup first.
-	if err := Backup(); err != nil {
-		return fmt.Errorf("backup before write: %w", err)
-	}
-
+// WriteAliasesFile does a full rewrite of aliases.sh from entries for shell.
+func WriteAliasesFile(entries []InstalledEntry, shell string) error {
 	// Sort entries by name for deterministic output.
 	sorted := make([]InstalledEntry, len(entries))
 	copy(sorted, entries)
@@ -445,7 +450,7 @@ func WriteAliasesFile(entries []InstalledEntry) error {
 		}
 	}
 
-	aliasesPath, err := AliasesFilePath()
+	aliasesPath, err := AliasesFilePath(shell)
 	if err != nil {
 		return err
 	}

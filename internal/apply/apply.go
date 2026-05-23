@@ -35,11 +35,11 @@ func NameExistsInShell(name string) bool {
 	return strings.TrimSpace(string(out)) != ""
 }
 
-// Apply adds the accepted suggestions to installed.json and rewrites aliases.sh.
+// Apply adds the accepted suggestions to installed.json and rewrites aliases.sh for shell.
 // For each suggestion, it checks for name conflicts (in installed.json and in the shell).
 // It returns a list of names that were skipped due to conflicts or validation failures.
-func Apply(newSuggestions []llm.Suggestion) (skipped []string, err error) {
-	existing, err := aliases.LoadInstalled()
+func Apply(newSuggestions []llm.Suggestion, shell string) (skipped []string, err error) {
+	existing, err := aliases.LoadInstalled(shell)
 	if err != nil {
 		return nil, fmt.Errorf("load installed: %w", err)
 	}
@@ -88,12 +88,12 @@ func Apply(newSuggestions []llm.Suggestion) (skipped []string, err error) {
 	}
 
 	// Save updated installed.json.
-	if err := aliases.SaveInstalled(existing); err != nil {
+	if err := aliases.SaveInstalled(existing, shell); err != nil {
 		return skipped, fmt.Errorf("save installed: %w", err)
 	}
 
 	// Rewrite aliases.sh.
-	if err := aliases.WriteAliasesFile(existing); err != nil {
+	if err := aliases.WriteAliasesFile(existing, shell); err != nil {
 		return skipped, fmt.Errorf("write aliases file: %w", err)
 	}
 
