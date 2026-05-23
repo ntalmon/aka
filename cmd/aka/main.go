@@ -25,7 +25,7 @@ func newRootCmd() *cobra.Command {
 		Use:   "aka",
 		Short: "AKA — shell history scanner and alias manager",
 		Long: `AKA (also-known-as) reads your shell history, censors sensitive data,
-and uses the Anthropic API to suggest useful shell aliases and functions.
+and uses an LLM to suggest useful shell aliases and functions.
 
 Get started:
   aka init          # one-time setup

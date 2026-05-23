@@ -59,38 +59,9 @@ func runInit(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	if err := aliases.Init(rcFile, shell); err != nil {
-		return fmt.Errorf("init: %w", err)
-	}
-
-	aliasesPath, err := aliases.AliasesFilePath(shell)
-	if err != nil {
+	if err := initShell(shell, rcFile); err != nil {
 		return err
 	}
-
-	// Ask whether to set up tab-completion.
-	enableCompletion, err := ui.PromptEnableCompletion()
-	if err != nil {
-		return fmt.Errorf("completion prompt: %w", err)
-	}
-
-	var completionPath string
-	if enableCompletion {
-		if err := aliases.InitCompletion(shell, rcFile); err != nil {
-			return fmt.Errorf("init completion: %w", err)
-		}
-		completionPath, err = aliases.CompletionFilePath(shell)
-		if err != nil {
-			return err
-		}
-	}
-
-	ui.PrintSuccess("✓ AKA initialized!")
-	fmt.Printf("  Aliases file: %s\n", aliasesPath)
-	if completionPath != "" {
-		fmt.Printf("  Completion:   %s\n", completionPath)
-	}
-	fmt.Printf("  Source line added to: %s\n", rcFile)
 
 	// If no API key is configured yet, prompt for it now so the user is ready to run `aka scan`.
 	cfg, err := config.Load()
@@ -107,6 +78,33 @@ func runInit(cmd *cobra.Command, _ []string) error {
 
 	fmt.Println("\nRun `aka scan` to generate your first aliases.")
 	fmt.Printf("Then reload your shell: source %s\n", rcFile)
+	return nil
+}
+
+// initShell wires up aliases.sh and (optionally) completion for the given shell.
+// rcFile must already be resolved. It is called by both runInit and runScan.
+func initShell(shell, rcFile string) error {
+	if err := aliases.Init(rcFile, shell); err != nil {
+		return fmt.Errorf("init: %w", err)
+	}
+
+	aliasesPath, err := aliases.AliasesFilePath(shell)
+	if err != nil {
+		return err
+	}
+
+	if err := aliases.InitCompletion(shell, rcFile); err != nil {
+		return fmt.Errorf("init completion: %w", err)
+	}
+	completionPath, err := aliases.CompletionFilePath(shell)
+	if err != nil {
+		return err
+	}
+
+	ui.PrintSuccess("✓ AKA initialized!")
+	fmt.Printf("  Aliases file: %s\n", aliasesPath)
+	fmt.Printf("  Completion:   %s\n", completionPath)
+	fmt.Printf("  Source line added to: %s\n", rcFile)
 	return nil
 }
 

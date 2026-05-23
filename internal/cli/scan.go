@@ -24,7 +24,7 @@ func NewScanCmd() *cobra.Command {
 		Use:   "scan",
 		Short: "Scan shell history and suggest aliases/functions",
 		Long: `aka scan reads your shell history, censors sensitive data, and calls
-the Anthropic API to suggest useful shell aliases and functions.`,
+an LLM to suggest useful shell aliases and functions.`,
 		RunE: runScan,
 	}
 	cmd.Flags().Int("history", 0, "Max number of history entries to use (0 = use config default)")
@@ -53,9 +53,22 @@ func runScan(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("check shell: %w", err)
 	}
 	if !ok {
-		fmt.Printf("Shell '%s' is not set up with AKA.\n", shell)
-		fmt.Printf("Run 'aka init --shell %s' to get started.\n", shell)
-		return nil
+		confirm, err := ui.PromptInitShell(shell)
+		if err != nil {
+			return fmt.Errorf("prompt init shell: %w", err)
+		}
+		if !confirm {
+			fmt.Printf("Run 'aka init --shell %s' whenever you're ready.\n", shell)
+			return nil
+		}
+		rcFile, err := rcFileForShell(shell)
+		if err != nil {
+			return fmt.Errorf("resolve rc file: %w", err)
+		}
+		if err := initShell(shell, rcFile); err != nil {
+			return err
+		}
+		fmt.Println()
 	}
 
 	// Load config.

@@ -20,20 +20,23 @@ import (
 )
 
 var (
-	titleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
-	addStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	removeStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	headerStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
-	mutedStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	successStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))
-	labelStyle      = lipgloss.NewStyle().Bold(true)
-	aliasCodeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
-	successBarStyle = lipgloss.NewStyle().
-			BorderLeft(true).
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color("10")).
-			PaddingLeft(1).
-			Foreground(lipgloss.Color("10"))
+	titleStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
+	addStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	removeStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	headerStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+	mutedStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	successStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))
+	aliasCodeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
+	patternLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
+	aliasLabelStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))
+	templateStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	promptStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+	successBarStyle   = lipgloss.NewStyle().
+				BorderLeft(true).
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("10")).
+				PaddingLeft(1).
+				Foreground(lipgloss.Color("10"))
 )
 
 const asciiArt = `
@@ -172,14 +175,17 @@ func ReviewSuggestions(suggestions []llm.Suggestion) ([]llm.Suggestion, error) {
 
 	for i, s := range suggestions {
 		fmt.Printf("\n%s  %s\n",
-			labelStyle.Render(fmt.Sprintf("[%d] PATTERN FOUND:", i+1)),
-			sanitizeForDisplay(s.Template),
+			patternLabelStyle.Render(fmt.Sprintf("[%d] PATTERN FOUND:", i+1)),
+			templateStyle.Render(sanitizeForDisplay(s.Template)),
 		)
 		fmt.Printf("   %s  %s\n",
-			labelStyle.Render("↳ SUGGESTED ALIAS:"),
+			aliasLabelStyle.Render("↳ SUGGESTED ALIAS:"),
 			aliasCodeStyle.Render("`"+sanitizeForDisplay(buildInvocation(s))+"`"),
 		)
-		fmt.Printf("\n   Accept suggestion? [Y/n/e] ")
+		if s.Rationale != "" {
+			fmt.Printf("   %s\n", mutedStyle.Render(sanitizeForDisplay(s.Rationale)))
+		}
+		fmt.Printf("\n   %s ", promptStyle.Render("Accept suggestion? [Y/n/e]"))
 
 		line, _ := reader.ReadString('\n')
 		choice := strings.ToLower(strings.TrimSpace(line))
@@ -300,21 +306,20 @@ func providerKeyPrompt(provider string) (title, desc string) {
 	}
 }
 
-// PromptEnableCompletion asks the user whether to install tab-completion for `aka`.
-func PromptEnableCompletion() (bool, error) {
-	enable := true
+// PromptInitShell asks the user whether to initialize AKA for the given shell right now.
+func PromptInitShell(shell string) (bool, error) {
+	confirm := true
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewConfirm().
-				Title("Enable tab-completion for `aka`?").
-				Description("Writes ~/.config/aka/completion.sh and sources it from your rc file.").
-				Value(&enable),
+				Title(fmt.Sprintf("Shell '%s' is not set up with AKA. Initialize now?", shell)).
+				Value(&confirm),
 		),
 	)
 	if err := form.Run(); err != nil {
 		return false, err
 	}
-	return enable, nil
+	return confirm, nil
 }
 
 // PrintError prints an error message to stderr.
