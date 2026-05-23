@@ -2,9 +2,11 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
 	"github.com/ntalmon/aka/aka-cli/internal/aliases"
@@ -46,31 +48,66 @@ func runList(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
+	// Column widths. NAME expands to fit data; TEMPLATE fills whatever is left.
+	const (
+		kindW     = 8
+		createdW  = 16
+		lastUsedW = 16
+		gaps      = 4 // one space between each of the five columns
+		minTmplW  = 15
+	)
+
+	termWidth, _, terr := term.GetSize(uintptr(os.Stdout.Fd()))
+	if terr != nil || termWidth < 40 {
+		termWidth = 80
+	}
+
+	nameW := len("NAME")
+	for _, e := range entries {
+		if n := len(e.Name); n > nameW {
+			nameW = n
+		}
+	}
+	if nameW > 20 {
+		nameW = 20
+	}
+
+	templateW := termWidth - nameW - kindW - createdW - lastUsedW - gaps
+	if templateW < minTmplW {
+		templateW = minTmplW
+	}
+
 	// Styles.
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
 	nameStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 	kindStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	templateStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 
-	fmt.Println(headerStyle.Render(fmt.Sprintf("%-16s %-10s %-40s %-22s %-22s",
-		"NAME", "KIND", "TEMPLATE", "CREATED", "LAST USED")))
-	fmt.Println(strings.Repeat("─", 115))
+	header := fmt.Sprintf("%-*s %-*s %-*s %-*s %-*s",
+		nameW, "NAME",
+		kindW, "KIND",
+		templateW, "TEMPLATE",
+		createdW, "CREATED",
+		lastUsedW, "LAST USED",
+	)
+	fmt.Println(headerStyle.Render(header))
+	fmt.Println(strings.Repeat("─", nameW+kindW+templateW+createdW+lastUsedW+gaps))
 
 	for _, e := range entries {
 		lastUsed := "—"
 		if !e.LastUsedAt.IsZero() {
 			lastUsed = e.LastUsedAt.Format("2006-01-02 15:04")
 		}
-		template := e.Template
-		if len(template) > 38 {
-			template = template[:35] + "..."
+		tmpl := e.Template
+		if len(tmpl) > templateW {
+			tmpl = tmpl[:templateW-3] + "..."
 		}
-		fmt.Printf("%-16s %-10s %-40s %-22s %-22s\n",
-			nameStyle.Render(e.Name),
-			kindStyle.Render(e.Kind),
-			templateStyle.Render(template),
-			e.CreatedAt.Format("2006-01-02 15:04"),
-			lastUsed,
+		fmt.Printf("%s %s %s %-*s %-*s\n",
+			nameStyle.Render(fmt.Sprintf("%-*s", nameW, e.Name)),
+			kindStyle.Render(fmt.Sprintf("%-*s", kindW, e.Kind)),
+			templateStyle.Render(fmt.Sprintf("%-*s", templateW, tmpl)),
+			createdW, e.CreatedAt.Format("2006-01-02 15:04"),
+			lastUsedW, lastUsed,
 		)
 	}
 
