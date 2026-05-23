@@ -47,23 +47,6 @@ func shellDir(shell string) (string, error) {
 	return dir, nil
 }
 
-// globalBaseDir returns ~/.config/aka, creating it at 0700 if needed.
-// Used for migration checks and the RC backup within Init.
-func globalBaseDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".config", "aka")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return "", err
-	}
-	return dir, nil
-}
-
 // AliasesFilePath returns the path to the managed aliases file for shell.
 func AliasesFilePath(shell string) (string, error) {
 	dir, err := shellDir(shell)

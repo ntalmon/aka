@@ -309,4 +309,3 @@ func buildProvider(cfg *config.Config, apiKey string) llm.Provider {
 		return llm.New(apiKey).WithModel(model)
 	}
 }
-
