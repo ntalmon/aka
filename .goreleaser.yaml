@@ -64,3 +64,20 @@ release:
     name: aka-cli
   draft: false
   prerelease: auto
+
+brews:
+  - name: aka
+    repository:
+      owner: ntalmon
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/ntalmon/aka-cli"
+    description: "Shell history analyzer and alias manager powered by AI"
+    license: "MIT"
+    install: |
+      bin.install "aka"
+    test: |
+      system "#{bin}/aka", "--version"
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
