@@ -20,40 +20,49 @@ import (
 
 // secretPattern holds a compiled regex and its placeholder label.
 type secretPattern struct {
-	re    *regexp.Regexp
-	label string // e.g. "SECRET", "TOKEN", "PASSWORD"
+	re           *regexp.Regexp
+	label        string // e.g. "SECRET", "TOKEN", "PASSWORD"
+	captureGroup int    // 0 = replace full match; >0 = replace only that submatch group
 }
 
 var secretPatterns = []secretPattern{
 	// AWS access key IDs.
-	{regexp.MustCompile(`AKIA[0-9A-Z]{16}`), "TOKEN"},
+	{regexp.MustCompile(`AKIA[0-9A-Z]{16}`), "TOKEN", 0},
 	// GitHub classic tokens (ghp_/ghs_ prefix).
-	{regexp.MustCompile(`gh[ps]_[A-Za-z0-9]{36}`), "TOKEN"},
+	{regexp.MustCompile(`gh[ps]_[A-Za-z0-9]{36}`), "TOKEN", 0},
 	// GitHub fine-grained PATs.
-	{regexp.MustCompile(`github_pat_[A-Za-z0-9_]{82}`), "TOKEN"},
+	{regexp.MustCompile(`github_pat_[A-Za-z0-9_]{82}`), "TOKEN", 0},
 	// OpenAI legacy keys.
-	{regexp.MustCompile(`sk-[A-Za-z0-9]{48}`), "TOKEN"},
+	{regexp.MustCompile(`sk-[A-Za-z0-9]{48}`), "TOKEN", 0},
 	// OpenAI project keys.
-	{regexp.MustCompile(`sk-proj-[A-Za-z0-9_\-]{20,}`), "TOKEN"},
+	{regexp.MustCompile(`sk-proj-[A-Za-z0-9_\-]{20,}`), "TOKEN", 0},
 	// Anthropic keys.
-	{regexp.MustCompile(`sk-ant-[A-Za-z0-9-]{95}`), "TOKEN"},
+	{regexp.MustCompile(`sk-ant-[A-Za-z0-9-]{95}`), "TOKEN", 0},
 	// Groq API keys.
-	{regexp.MustCompile(`gsk_[A-Za-z0-9]{52}`), "TOKEN"},
+	{regexp.MustCompile(`gsk_[A-Za-z0-9]{52}`), "TOKEN", 0},
 	// Slack API tokens.
-	{regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]+`), "TOKEN"},
+	{regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]+`), "TOKEN", 0},
 	// Stripe live secret/publishable keys.
-	{regexp.MustCompile(`sk_live_[A-Za-z0-9]{24}`), "TOKEN"},
-	{regexp.MustCompile(`pk_live_[A-Za-z0-9]{24}`), "TOKEN"},
+	{regexp.MustCompile(`sk_live_[A-Za-z0-9]{24}`), "TOKEN", 0},
+	{regexp.MustCompile(`pk_live_[A-Za-z0-9]{24}`), "TOKEN", 0},
 	// Google Cloud Platform API keys.
-	{regexp.MustCompile(`AIza[0-9A-Za-z\-_]{35}`), "TOKEN"},
+	{regexp.MustCompile(`AIza[0-9A-Za-z\-_]{35}`), "TOKEN", 0},
 	// JWTs: three base64url segments separated by dots.
-	{regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`), "TOKEN"},
+	{regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`), "TOKEN", 0},
 	// Bearer tokens (grab the token value after "Bearer ").
-	{regexp.MustCompile(`(?i)Bearer\s+([A-Za-z0-9\-._~+/]+=*)`), "TOKEN"},
+	{regexp.MustCompile(`(?i)Bearer\s+([A-Za-z0-9\-._~+/]+=*)`), "TOKEN", 0},
 	// password=VALUE patterns.
-	{regexp.MustCompile(`(?i)(password|passwd|pass|pwd)=\S+`), "PASSWORD"},
+	{regexp.MustCompile(`(?i)(password|passwd|pass|pwd)=\S+`), "PASSWORD", 0},
 	// URL credentials: ://user:pass@host.
-	{regexp.MustCompile(`://[^:@\s]+:[^@\s]+@`), "URL_CREDS"},
+	{regexp.MustCompile(`://[^:@\s]+:[^@\s]+@`), "URL_CREDS", 0},
+	// Full git commit SHA-1 hashes (40 lowercase hex chars).
+	{regexp.MustCompile(`\b[0-9a-f]{40}\b`), "COMMIT_HASH", 0},
+	// Git commit message: -m "..." — replace only the message text (group 2), keeping -m "...".
+	{regexp.MustCompile(`(-m\s+")([^"]*)(")`), "COMMIT_MSG", 2},
+	// Git commit message: -m '...'
+	{regexp.MustCompile(`(-m\s+')([^']*)(')`), "COMMIT_MSG", 2},
+	// Git commit message: --message=value
+	{regexp.MustCompile(`(--message=)(\S+)`), "COMMIT_MSG", 2},
 }
 
 // shannonEntropy calculates the Shannon entropy of a string in bits/char.
@@ -109,10 +118,19 @@ func CensorSecrets(commands []string) (censored []string, redactionMap map[strin
 	for _, cmd := range commands {
 		// Apply regex patterns.
 		for _, p := range secretPatterns {
-			matches := p.re.FindAllString(cmd, -1)
-			for _, m := range matches {
-				if _, ok := seen[m]; !ok {
-					seen[m] = p.label
+			if p.captureGroup == 0 {
+				for _, m := range p.re.FindAllString(cmd, -1) {
+					if _, ok := seen[m]; !ok {
+						seen[m] = p.label
+					}
+				}
+			} else {
+				for _, m := range p.re.FindAllStringSubmatch(cmd, -1) {
+					if p.captureGroup < len(m) && m[p.captureGroup] != "" {
+						if _, ok := seen[m[p.captureGroup]]; !ok {
+							seen[m[p.captureGroup]] = p.label
+						}
+					}
 				}
 			}
 		}
@@ -159,12 +177,16 @@ func CensorSecrets(commands []string) (censored []string, redactionMap map[strin
 		result := cmd
 		// Apply regex replacements first.
 		for _, p := range secretPatterns {
-			result = p.re.ReplaceAllStringFunc(result, func(m string) string {
-				if ph, ok := valueToPlaceholder[m]; ok {
-					return ph
-				}
-				return m
-			})
+			if p.captureGroup == 0 {
+				result = p.re.ReplaceAllStringFunc(result, func(m string) string {
+					if ph, ok := valueToPlaceholder[m]; ok {
+						return ph
+					}
+					return m
+				})
+			} else {
+				result = replaceSubmatch(result, p.re, p.captureGroup, valueToPlaceholder)
+			}
 		}
 		// Apply entropy replacements.
 		for val, ph := range valueToPlaceholder {
@@ -173,6 +195,33 @@ func CensorSecrets(commands []string) (censored []string, redactionMap map[strin
 		censored[i] = result
 	}
 	return censored, redactionMap
+}
+
+// replaceSubmatch replaces only the specified capture group within each match,
+// leaving the rest of the match (e.g., surrounding quotes or flag prefix) intact.
+func replaceSubmatch(s string, re *regexp.Regexp, group int, replacements map[string]string) string {
+	indices := re.FindAllStringSubmatchIndex(s, -1)
+	if len(indices) == 0 {
+		return s
+	}
+	var b strings.Builder
+	prev := 0
+	for _, idx := range indices {
+		gStart, gEnd := idx[2*group], idx[2*group+1]
+		if gStart < 0 {
+			continue
+		}
+		b.WriteString(s[prev:gStart])
+		val := s[gStart:gEnd]
+		if ph, ok := replacements[val]; ok {
+			b.WriteString(ph)
+		} else {
+			b.WriteString(val)
+		}
+		prev = gEnd
+	}
+	b.WriteString(s[prev:])
+	return b.String()
 }
 
 // ----------------------------------------------------------------------------
@@ -262,8 +311,20 @@ func isPortNumber(s string) bool {
 	return n >= 1 && n <= 65535
 }
 
-// inferVarType guesses the typed placeholder based on value and context.
-func inferVarType(value, binary string, idx int) string {
+// anyHasDigit reports whether any string in ss contains an ASCII digit.
+func anyHasDigit(ss []string) bool {
+	for _, s := range ss {
+		for _, c := range s {
+			if c >= '0' && c <= '9' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// inferVarType guesses the typed placeholder based on value.
+func inferVarType(value string, idx int) string {
 	v := strings.ToLower(value)
 	// Path-like: contains / or starts with ~ or .
 	if strings.ContainsAny(value, "/") || strings.HasPrefix(value, "~") || strings.HasPrefix(value, ".") {
@@ -280,10 +341,6 @@ func inferVarType(value, binary string, idx int) string {
 	// Hostname-like: contains dots but no slashes, looks like a domain.
 	if strings.Contains(v, ".") && !strings.Contains(v, "/") && !strings.HasPrefix(v, "<") {
 		return "HOST"
-	}
-	// Branch-like: in git context.
-	if binary == "git" {
-		return "BRANCH"
 	}
 	_ = v
 	_ = idx
@@ -357,9 +414,20 @@ func ParameterizeVars(commands []string) (parameterized []string, varMap map[str
 			if len(vals) == 0 {
 				continue
 			}
-			peekTyp := inferVarType(vals[0], binary, si)
+			peekTyp := inferVarType(vals[0], si)
 			// Ports and paths are never parameterized.
 			if peekTyp == "PATH" || peekTyp == "PORT" {
+				continue
+			}
+			// Git positional args (branch names, remotes, tags, refs) are not
+			// parameterized — only IPs are, as they may reveal network topology.
+			if binary == "git" && peekTyp != "IP" {
+				continue
+			}
+			// VAR-typed slots with no digit in any value are treated as subcommand
+			// identifiers (e.g. "scan", "set-model"), not varying data. Real data
+			// (server IDs, versions, filenames) almost always contains a digit.
+			if peekTyp == "VAR" && !anyHasDigit(vals) {
 				continue
 			}
 			// IPs are always parameterized (even a single distinct value).
@@ -388,7 +456,7 @@ func ParameterizeVars(commands []string) (parameterized []string, varMap map[str
 
 	for _, slot := range slots {
 		// Pick type from first value in the slot.
-		typ := inferVarType(slot.values[0], slot.binary, slot.slotIdx)
+		typ := inferVarType(slot.values[0], slot.slotIdx)
 		if typ == "PATH" || typ == "PORT" {
 			continue
 		}

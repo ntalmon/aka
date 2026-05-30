@@ -75,8 +75,8 @@ History cursor behavior: `minNewEntries` (100) is the threshold below which `ui.
 `ui.ReviewCensored` returns `([]history.Entry, error)` — nil means the user aborted. It shows a 3-option prompt: send as-is, edit manually (opens `$EDITOR`, defaults to `vi`), or abort. The edited text is read back line-by-line into new `history.Entry` values.
 
 Two sequential passes:
-1. **Pass 1 — secrets**: regex pack (AWS/GitHub/OpenAI/Anthropic keys, JWTs, Bearer tokens, `password=`, URL creds) + Shannon-entropy heuristic (>4.5 bits/char, >20 chars, mixed case+digits). Same literal value across commands → same `<TOKEN_n>` index.
-2. **Pass 2 — variable parameterization**: clusters commands by `(binary + flags)` shape key. Value slots with ≥2 distinct values → typed placeholder (`<BRANCH_n>`, `<PATH_n>`, `<HOST_n>`, `<VAR_n>`). This is what drives the LLM to suggest functions with `$1`/`$2` instead of hardcoded aliases.
+1. **Pass 1 — secrets**: regex pack (AWS/GitHub/OpenAI/Anthropic/Groq/Slack/Stripe/GCP keys, JWTs, Bearer tokens, `password=`, URL creds, **full 40-char git commit hashes**, **git commit messages** after `-m "..."` / `-m '...'` / `--message=`) + Shannon-entropy heuristic (>4.5 bits/char, >20 chars, 2-of-3 char classes). Same literal value across commands → same placeholder index. Commit message patterns use a `captureGroup` mechanism to replace only the message text while preserving `-m "..."` syntax in the output.
+2. **Pass 2 — variable parameterization**: clusters commands by `(binary + flags)` shape key. Value slots with ≥2 distinct values → typed placeholder (`<PATH_n>`, `<HOST_n>`, `<IP_n>`, `<VAR_n>`). Three exclusions prevent false parameterization: (a) **git**: positional args (branch names, remotes, refs) are never parameterized — only IPs are, as they may reveal network topology; (b) **VAR-typed slots with no digit**: values containing only letters and hyphens (e.g. `scan`, `set-model`) are treated as subcommand identifiers, not data — only VAR slots where at least one value contains a digit are parameterized; (c) **paths and port numbers** are always skipped.
 
 Both passes are deterministic: candidates are sorted before assigning indices.
 
@@ -101,7 +101,7 @@ Supported providers and their model lists live in `internal/llm/models.go` (`Sup
 
 ### First-run / key setup
 
-`aka init` is the primary path: after shell wiring it automatically prompts for provider and API key if none is configured (via `ensureAPIKey()` in `internal/cli/scan.go`, shared with `aka scan`). `aka scan` calls the same helper as a fallback for users who skipped init. `aka config set-key [--provider <provider>]` does it interactively at any time. The provider's recommended default model is set automatically.
+`aka init` is the primary path: after shell wiring it automatically prompts for provider, API key, and model if none is configured (via `ensureAPIKey()` in `internal/cli/scan.go`, shared with `aka scan`). The flow is provider → API key → model; the model picker (`ui.PromptModel`) lists each provider's models cheapest-first with the cheapest pre-selected. `aka scan` calls the same helper as a fallback for users who skipped init. `aka config set-key [--provider <provider>]` runs the same provider→key→model flow interactively at any time, and `aka config set-model` changes just the model for the configured provider without re-entering the key.
 
 ### `aka delete`
 
@@ -182,5 +182,7 @@ When a significant mistake is made during a session — wrong assumption, bad ap
 **`strings.Builder` + `fmt.Sprintf` inside `WriteString` is flagged by staticcheck.** Use `fmt.Fprintf(&sb, ...)` directly instead.
 
 **Atomic file writes need `_ = tmp.Close()` in error paths.** When calling `tmp.Close()` before an early return (cleanup path), use `_ = tmp.Close()` so errcheck doesn't flag the discarded error.
+
+**Pass 2 parameterization over-fired on CLI subcommands.** `./aka scan/help/config` and `./aka config set-model/set-key` were being replaced with `<VAR_n>` because the parser treats subcommands as positional slots. Fixed with a VAR-typed no-digit guard: only parameterize VAR slots where at least one value contains a digit, distinguishing data (IDs, version numbers) from subcommand-like identifiers (letters+hyphens only).
 
 <!-- Add new lessons above this line -->

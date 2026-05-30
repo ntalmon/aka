@@ -5,24 +5,39 @@ import (
 	"testing"
 )
 
-func TestParameterizeVarsGitCheckout(t *testing.T) {
+func TestParameterizeVarsGitBranchesNotParameterized(t *testing.T) {
 	cmds := []string{
 		"git checkout main",
 		"git checkout develop",
 		"git checkout feat-billing",
 	}
 	parameterized, varMap := ParameterizeVars(cmds)
-	// All three should become "git checkout <BRANCH_1>" or similar.
-	for _, p := range parameterized {
-		if strings.Contains(p, "main") || strings.Contains(p, "develop") || strings.Contains(p, "feat-billing") {
-			t.Errorf("value not replaced: %q", p)
-		}
-		if !strings.Contains(p, "<") {
-			t.Errorf("no placeholder inserted: %q", p)
+	// Branch names should be preserved — git positional args are never parameterized.
+	for i, p := range parameterized {
+		if p != cmds[i] {
+			t.Errorf("git checkout branch was modified: original=%q got=%q", cmds[i], p)
 		}
 	}
-	if len(varMap) == 0 {
-		t.Error("varMap should not be empty")
+	if len(varMap) != 0 {
+		t.Errorf("varMap should be empty for git branches, got: %v", varMap)
+	}
+}
+
+func TestParameterizeVarsSubcommandsNotParameterized(t *testing.T) {
+	// All-lowercase-alpha values in slot 0 are treated as subcommands, not data.
+	cmds := []string{
+		"./aka scan",
+		"./aka help",
+		"./aka config",
+	}
+	parameterized, varMap := ParameterizeVars(cmds)
+	for i, p := range parameterized {
+		if p != cmds[i] {
+			t.Errorf("subcommand was parameterized: original=%q got=%q", cmds[i], p)
+		}
+	}
+	if len(varMap) != 0 {
+		t.Errorf("varMap should be empty for subcommands, got: %v", varMap)
 	}
 }
 
@@ -46,8 +61,8 @@ func TestParameterizeVarsNoParamForSingleValue(t *testing.T) {
 
 func TestParameterizeVarsSameValueSamePlaceholder(t *testing.T) {
 	cmds := []string{
-		"git checkout feat-x",
-		"git checkout feat-y",
+		"ssh host1",
+		"ssh host2",
 	}
 	parameterized, _ := ParameterizeVars(cmds)
 	// Both should use the same placeholder.
@@ -58,28 +73,30 @@ func TestParameterizeVarsSameValueSamePlaceholder(t *testing.T) {
 }
 
 func TestParameterizeVarsDockerRun(t *testing.T) {
+	// Versioned image tags contain digits and are parameterized.
 	cmds := []string{
-		"docker run -it ubuntu bash",
-		"docker run -it alpine sh",
-		"docker run -it debian bash",
+		"docker run -it ubuntu:22.04 bash",
+		"docker run -it alpine:3.18 sh",
+		"docker run -it debian:11 bash",
 	}
 	parameterized, _ := ParameterizeVars(cmds)
-	// ubuntu, alpine, debian should become a var; bash/sh might vary too.
 	for _, p := range parameterized {
 		if strings.Contains(p, "ubuntu") || strings.Contains(p, "alpine") || strings.Contains(p, "debian") {
-			t.Errorf("image name not replaced: %q", p)
+			t.Errorf("versioned image name not replaced: %q", p)
 		}
 	}
 }
 
 func TestParameterizeVarsMixedCluster(t *testing.T) {
 	cmds := []string{
-		// Cluster 1: git push origin <branch> — branch varies.
+		// Git commands: branch names are NOT parameterized.
 		"git push origin main",
 		"git push origin develop",
 		"git push origin feat-x",
-		// Cluster 2: git status — no params.
 		"git status",
+		// Non-git with digit-containing targets ARE parameterized.
+		"ssh host1",
+		"ssh host2",
 	}
 	parameterized, varMap := ParameterizeVars(cmds)
 	// git status should not be parameterized.
@@ -88,21 +105,20 @@ func TestParameterizeVarsMixedCluster(t *testing.T) {
 			t.Errorf("git status got a placeholder: %q", p)
 		}
 	}
-	// The push commands should all use the same placeholder.
-	pushCmds := []string{}
-	for _, p := range parameterized {
-		if strings.HasPrefix(p, "git push") {
-			pushCmds = append(pushCmds, p)
+	// git push branch names should not be parameterized.
+	for i, p := range parameterized {
+		if strings.HasPrefix(p, "git push") && strings.Contains(p, "<") {
+			t.Errorf("git push branch was incorrectly parameterized: %q (original: %q)", p, cmds[i])
 		}
 	}
-	if len(pushCmds) != 3 {
-		t.Fatalf("expected 3 push commands, got %d", len(pushCmds))
-	}
-	if pushCmds[0] != pushCmds[1] || pushCmds[1] != pushCmds[2] {
-		t.Errorf("push commands have different parameterizations: %v", pushCmds)
+	// ssh targets (with digits) should be parameterized.
+	for _, p := range parameterized {
+		if strings.HasPrefix(p, "ssh") && !strings.Contains(p, "<") {
+			t.Errorf("ssh target not parameterized: %q", p)
+		}
 	}
 	if len(varMap) == 0 {
-		t.Error("varMap should not be empty")
+		t.Error("varMap should not be empty (ssh targets should be in it)")
 	}
 }
 

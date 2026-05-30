@@ -47,36 +47,40 @@ func TestCensorAllPass1RedactsSecrets(t *testing.T) {
 }
 
 func TestCensorAllPass2ParameterizesVariableSlots(t *testing.T) {
+	// Varying positional args that contain digits are treated as data and parameterized.
+	entries := []history.Entry{
+		{Command: "ssh host1"},
+		{Command: "ssh host2"},
+		{Command: "ssh host3"},
+	}
+	censored, _ := CensorAll(entries)
+	for _, e := range censored {
+		if strings.Contains(e.Command, "host1") || strings.Contains(e.Command, "host2") {
+			t.Errorf("varying SSH target not parameterized: %q", e.Command)
+		}
+	}
+}
+
+func TestCensorAllGitBranchesNotParameterized(t *testing.T) {
 	entries := []history.Entry{
 		{Command: "git checkout feature-a"},
 		{Command: "git checkout feature-b"},
 		{Command: "git checkout feature-c"},
 	}
 	censored, _ := CensorAll(entries)
-	parameterized := false
 	for _, e := range censored {
-		if strings.Contains(e.Command, "<BRANCH_") {
-			parameterized = true
-			break
+		if strings.Contains(e.Command, "<") {
+			t.Errorf("git branch was incorrectly parameterized: %q", e.Command)
 		}
-	}
-	if !parameterized {
-		cmds := make([]string, len(censored))
-		for i, e := range censored {
-			cmds[i] = e.Command
-		}
-		t.Errorf("git checkout branches not parameterized: %v", cmds)
 	}
 }
 
 func TestCensorAllMergesRedactionMaps(t *testing.T) {
-	// Pass 1 produces secret placeholders; Pass 2 produces variable placeholders.
-	// Both should appear in the merged map.
 	awsKey := "AKIAIOSFODNN7EXAMPLE"
 	entries := []history.Entry{
 		{Command: "aws s3 ls --key " + awsKey},
-		{Command: "git checkout feature-a"},
-		{Command: "git checkout feature-b"},
+		{Command: "ssh host1"},
+		{Command: "ssh host2"},
 	}
 	_, rm := CensorAll(entries)
 	if len(rm) == 0 {
@@ -118,31 +122,32 @@ func TestCensorAllPreservesCommandCount(t *testing.T) {
 // ---- inferVarType ----
 
 func TestInferVarTypePath(t *testing.T) {
-	if got := inferVarType("/home/user/file.go", "cat", 0); got != "PATH" {
+	if got := inferVarType("/home/user/file.go", 0); got != "PATH" {
 		t.Errorf("expected PATH for slash-containing value, got %q", got)
 	}
-	if got := inferVarType("~/projects/foo", "cat", 0); got != "PATH" {
+	if got := inferVarType("~/projects/foo", 0); got != "PATH" {
 		t.Errorf("expected PATH for tilde-prefixed value, got %q", got)
 	}
-	if got := inferVarType("./relative/path", "cat", 0); got != "PATH" {
+	if got := inferVarType("./relative/path", 0); got != "PATH" {
 		t.Errorf("expected PATH for dot-prefixed value, got %q", got)
 	}
 }
 
 func TestInferVarTypeHost(t *testing.T) {
-	if got := inferVarType("db.example.com", "ssh", 0); got != "HOST" {
+	if got := inferVarType("db.example.com", 0); got != "HOST" {
 		t.Errorf("expected HOST for domain-like value, got %q", got)
 	}
 }
 
 func TestInferVarTypeBranch(t *testing.T) {
-	if got := inferVarType("feature-branch", "git", 0); got != "BRANCH" {
-		t.Errorf("expected BRANCH for git binary, got %q", got)
+	// Git binary no longer produces a special BRANCH type; falls through to VAR.
+	if got := inferVarType("feature-branch", 0); got != "VAR" {
+		t.Errorf("expected VAR for git branch-like value, got %q", got)
 	}
 }
 
 func TestInferVarTypeVarFallback(t *testing.T) {
-	if got := inferVarType("somevalue", "kubectl", 0); got != "VAR" {
+	if got := inferVarType("somevalue", 0); got != "VAR" {
 		t.Errorf("expected VAR fallback, got %q", got)
 	}
 }
