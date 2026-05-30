@@ -7,7 +7,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ntalmon/aka/aka-cli/internal/config"
-	"github.com/ntalmon/aka/aka-cli/internal/llm"
 	"github.com/ntalmon/aka/aka-cli/internal/ui"
 )
 
@@ -17,6 +16,7 @@ func NewConfigCmd() *cobra.Command {
 		Use:   "config",
 		Short: "Manage AKA configuration",
 	}
+	cmd.AddCommand(newSetModelCmd())
 	cmd.AddCommand(newSetKeyCmd())
 	cmd.AddCommand(newSetMaxHistoryCmd())
 	cmd.AddCommand(newShowConfigCmd())
@@ -64,7 +64,11 @@ func runSetKey(cmd *cobra.Command, _ []string) error {
 	}
 
 	cfg.Provider = provider
-	cfg.Model = llm.ModelsForProvider(provider)[0].ID
+	model, err := ui.PromptModel(provider)
+	if err != nil {
+		return fmt.Errorf("select model: %w", err)
+	}
+	cfg.Model = model
 	if provider == "groq" {
 		cfg.GroqAPIKey = key
 	} else {
@@ -76,6 +80,38 @@ func runSetKey(cmd *cobra.Command, _ []string) error {
 	}
 
 	ui.PrintSuccess(fmt.Sprintf("✓ %s API key saved to ~/.config/aka/config.toml", provider))
+	return nil
+}
+
+func newSetModelCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "set-model",
+		Short: "Choose the model (or switch provider)",
+		RunE:  runSetModel,
+	}
+}
+
+func runSetModel(_ *cobra.Command, _ []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	provider, model, err := ui.PromptModelOrSwitchProvider(cfg.Provider)
+	if err != nil {
+		return fmt.Errorf("select model: %w", err)
+	}
+	var msg string
+	if provider != cfg.Provider {
+		msg = fmt.Sprintf("✓ switched to %s / %s", provider, model)
+	} else {
+		msg = fmt.Sprintf("✓ model set to %s", model)
+	}
+	cfg.Provider = provider
+	cfg.Model = model
+	if err := config.Save(cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	ui.PrintSuccess(msg)
 	return nil
 }
 

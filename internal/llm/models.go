@@ -15,9 +15,9 @@ type ProviderOption struct {
 // SupportedProviders lists all providers aka knows about.
 var SupportedProviders = []ProviderOption{
 	{ID: "anthropic", Label: "Anthropic (Claude)"},
-	{ID: "groq", Label: "Groq (Llama, Mixtral)"},
-	{ID: "openai", Label: "OpenAI (GPT-4o)"},
 	{ID: "gemini", Label: "Google Gemini"},
+	{ID: "openai", Label: "OpenAI (GPT-4o)"},
+	{ID: "groq", Label: "Groq (Llama, Mixtral)"},
 	{ID: "ollama", Label: "Ollama (local, no API key)"},
 }
 
@@ -56,7 +56,7 @@ func ModelsForProvider(provider string) []ModelOption {
 		return []ModelOption{
 			{ID: "claude-haiku-4-5-20251001", Label: "Haiku 4.5 — fastest, cheapest (recommended)"},
 			{ID: "claude-sonnet-4-6", Label: "Sonnet 4.6 — balanced"},
-			{ID: "claude-opus-4-7", Label: "Opus 4.7 — most capable"},
+			{ID: "claude-opus-4-8", Label: "Opus 4.8 — most capable"},
 		}
 	}
 }

@@ -163,7 +163,11 @@ func runScan(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Step 6: Call LLM.
-	fmt.Printf("🧠 Analyzing last %d commands for patterns...\n", len(censored))
+	provName := cfg.Provider
+	if provName == "" {
+		provName = "anthropic"
+	}
+	fmt.Printf("🧠 Analyzing last %d commands for patterns using %s/%s...\n", len(censored), provName, cfg.Model)
 	provider := buildProvider(cfg, apiKey)
 	suggestions, err := provider.Suggest(context.Background(), censored)
 	for {
@@ -258,7 +262,6 @@ func ensureAPIKey(cfg *config.Config) error {
 		return fmt.Errorf("select provider: %w", err)
 	}
 	cfg.Provider = chosenProvider
-	cfg.Model = llm.ModelsForProvider(chosenProvider)[0].ID
 
 	if chosenProvider != "ollama" {
 		apiKey, err := ui.PromptAPIKey(chosenProvider)
@@ -270,6 +273,13 @@ func ensureAPIKey(cfg *config.Config) error {
 		}
 		setAPIKeyForProvider(cfg, chosenProvider, apiKey)
 	}
+
+	chosenModel, err := ui.PromptModel(chosenProvider)
+	if err != nil {
+		return fmt.Errorf("select model: %w", err)
+	}
+	cfg.Model = chosenModel
+
 	if saveErr := config.Save(cfg); saveErr != nil {
 		fmt.Printf("Warning: could not save config: %v\n", saveErr)
 	}

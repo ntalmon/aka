@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/term"
 	"github.com/hexops/gotextdiff"
 	"github.com/hexops/gotextdiff/myers"
 	"github.com/hexops/gotextdiff/span"
@@ -20,23 +21,39 @@ import (
 )
 
 var (
-	titleStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
-	addStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	removeStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	headerStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
-	mutedStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	successStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))
-	aliasCodeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
-	patternLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
-	aliasLabelStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))
-	templateStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-	promptStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+	matrixGreen  = lipgloss.Color("#00FF41")
+	neonCyan     = lipgloss.Color("#00FFFF")
+	claudeOrange = lipgloss.Color("#FF9900")
+	cyberRed     = lipgloss.Color("#FF003C")
+	darkGray     = lipgloss.Color("#303030")
+	lightGray    = lipgloss.Color("#A0A0A0")
+
+	titleStyle        = lipgloss.NewStyle().Bold(true).Foreground(matrixGreen)
+	addStyle          = lipgloss.NewStyle().Foreground(matrixGreen)
+	removeStyle       = lipgloss.NewStyle().Foreground(cyberRed)
+	headerStyle       = lipgloss.NewStyle().Foreground(neonCyan)
+	mutedStyle        = lipgloss.NewStyle().Foreground(lightGray)
+	successStyle      = lipgloss.NewStyle().Bold(true).Foreground(matrixGreen)
+	aliasCodeStyle    = lipgloss.NewStyle().Foreground(neonCyan).Bold(true).Background(darkGray).Padding(0, 1)
+	patternLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(matrixGreen)
+	aliasLabelStyle   = lipgloss.NewStyle().Bold(true).Foreground(neonCyan)
+	templateStyle     = lipgloss.NewStyle().Foreground(lightGray)
+	promptStyle       = lipgloss.NewStyle().Foreground(claudeOrange).Bold(true)
 	successBarStyle   = lipgloss.NewStyle().
 				BorderLeft(true).
 				BorderStyle(lipgloss.NormalBorder()).
-				BorderForeground(lipgloss.Color("10")).
+				BorderForeground(matrixGreen).
 				PaddingLeft(1).
-				Foreground(lipgloss.Color("10"))
+				Foreground(matrixGreen)
+
+	suggestionBoxStyle = lipgloss.NewStyle().
+				BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(matrixGreen).
+				Padding(1, 2).
+				MarginBottom(1)
+
+	bannerIconStyle     = lipgloss.NewStyle().Foreground(claudeOrange)
+	bannerSubtitleStyle = lipgloss.NewStyle().Foreground(neonCyan)
 )
 
 const asciiArt = `
@@ -47,10 +64,9 @@ const asciiArt = `
 ██║  ██║██║  ██╗██║  ██║
 ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝`
 
-// PrintBanner prints the AKA ASCII art banner.
 func PrintBanner() {
 	fmt.Println(titleStyle.Render(asciiArt))
-	fmt.Print("  ⚡ AKA — Your AI Shell Assistant\n\n")
+	fmt.Print("  " + bannerIconStyle.Render("⚡") + " " + bannerSubtitleStyle.Render("AKA — Your AI Shell Assistant") + "\n\n")
 }
 
 // ReviewCensored renders a diff of original vs censored commands and asks the user how to proceed.
@@ -75,7 +91,7 @@ func ReviewCensored(original, censored []history.Entry) ([]history.Entry, error)
 				).
 				Value(&choice),
 		),
-	)
+	).WithTheme(cyberTheme())
 	if err := form.Run(); err != nil {
 		return nil, err
 	}
@@ -170,22 +186,47 @@ func ReviewSuggestions(suggestions []llm.Suggestion) ([]llm.Suggestion, error) {
 		return nil, nil
 	}
 
+	termWidth, _, err := term.GetSize(uintptr(os.Stdout.Fd()))
+	if err != nil || termWidth < 40 {
+		termWidth = 80
+	}
+	if termWidth > 100 {
+		termWidth = 100
+	}
+	boxStyle := suggestionBoxStyle.Width(termWidth - 4)
+
 	reader := bufio.NewReader(os.Stdin)
 	var accepted []llm.Suggestion
 
 	for i, s := range suggestions {
-		fmt.Printf("\n%s  %s\n",
-			patternLabelStyle.Render(fmt.Sprintf("[%d] PATTERN FOUND:", i+1)),
-			templateStyle.Render(sanitizeForDisplay(s.Template)),
-		)
-		fmt.Printf("   %s  %s\n",
-			aliasLabelStyle.Render("↳ SUGGESTED ALIAS:"),
-			aliasCodeStyle.Render("`"+sanitizeForDisplay(buildInvocation(s))+"`"),
-		)
+		pattern := patternLabelStyle.Render(fmt.Sprintf("[%d] PATTERN FOUND:", i+1))
+		template := templateStyle.Render(sanitizeForDisplay(s.Template))
+
+		aliasLbl := aliasLabelStyle.Render("↳ SUGGESTED ALIAS:")
+		aliasVal := aliasCodeStyle.Render(sanitizeForDisplay(buildInvocation(s)))
+
+		var rationale string
 		if s.Rationale != "" {
-			fmt.Printf("   %s\n", mutedStyle.Render(sanitizeForDisplay(s.Rationale)))
+			r := sanitizeForDisplay(s.Rationale)
+			// Keep the first sentence only; truncate at 120 chars as a hard cap.
+			if i := strings.IndexAny(r, ".!?"); i >= 0 && i < len(r)-1 {
+				r = r[:i+1]
+			}
+			if len(r) > 120 {
+				r = r[:117] + "..."
+			}
+			rationale = mutedStyle.Render(r)
 		}
-		fmt.Printf("\n   %s ", promptStyle.Render("Accept suggestion? [Y/n/e]"))
+
+		content := lipgloss.JoinVertical(lipgloss.Left,
+			fmt.Sprintf("%s  %s", pattern, template),
+			fmt.Sprintf("%s  %s", aliasLbl, aliasVal),
+			rationale,
+		)
+
+		fmt.Println(boxStyle.Render(content))
+
+		fmt.Printf("   %s ", promptStyle.Render("Accept suggestion? [Y/n/e]"))
 
 		line, _ := reader.ReadString('\n')
 		choice := strings.ToLower(strings.TrimSpace(line))
@@ -248,7 +289,7 @@ func PromptProvider() (string, error) {
 				Options(opts...).
 				Value(&selected),
 		),
-	)
+	).WithTheme(cyberTheme())
 	if err := form.Run(); err != nil {
 		return "", err
 	}
@@ -271,11 +312,52 @@ func PromptModel(provider string) (string, error) {
 				Options(opts...).
 				Value(&selected),
 		),
-	)
+	).WithTheme(cyberTheme())
 	if err := form.Run(); err != nil {
 		return "", err
 	}
 	return selected, nil
+}
+
+// PromptModelOrSwitchProvider shows models for currentProvider with an extra
+// "Switch to a different provider..." option at the bottom. Returns the
+// (provider, model) pair the user chose — provider may differ from the input
+// if they switched.
+func PromptModelOrSwitchProvider(currentProvider string) (string, string, error) {
+	const switchSentinel = "__switch_provider__"
+
+	models := llm.ModelsForProvider(currentProvider)
+	opts := make([]huh.Option[string], len(models)+1)
+	for i, m := range models {
+		opts[i] = huh.NewOption(m.Label, m.ID)
+	}
+	opts[len(models)] = huh.NewOption("Switch to a different provider...", switchSentinel)
+
+	var selected string
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Choose a model:").
+				Options(opts...).
+				Value(&selected),
+		),
+	).WithTheme(cyberTheme())
+	if err := form.Run(); err != nil {
+		return "", "", err
+	}
+
+	if selected == switchSentinel {
+		provider, err := PromptProvider()
+		if err != nil {
+			return "", "", err
+		}
+		model, err := PromptModel(provider)
+		if err != nil {
+			return "", "", err
+		}
+		return provider, model, nil
+	}
+	return currentProvider, selected, nil
 }
 
 // PromptAPIKey prompts the user to enter an API key for the given provider.
@@ -290,7 +372,7 @@ func PromptAPIKey(provider string) (string, error) {
 				EchoMode(huh.EchoModePassword).
 				Value(&key),
 		),
-	)
+	).WithTheme(cyberTheme())
 	if err := form.Run(); err != nil {
 		return "", err
 	}
@@ -315,7 +397,7 @@ func PromptInitShell(shell string) (bool, error) {
 				Title(fmt.Sprintf("Shell '%s' is not set up with AKA. Initialize now?", shell)).
 				Value(&confirm),
 		),
-	)
+	).WithTheme(cyberTheme())
 	if err := form.Run(); err != nil {
 		return false, err
 	}
@@ -354,7 +436,7 @@ func ChooseHistoryMode(newCount, totalCount int) (string, error) {
 				Options(opts...).
 				Value(&choice),
 		),
-	)
+	).WithTheme(cyberTheme())
 	if err := form.Run(); err != nil {
 		return "abort", err
 	}
@@ -383,7 +465,7 @@ func ChooseMaxHistory(currentLimit, totalNormalized int) (limit int, saveToConfi
 				).
 				Value(&choice),
 		),
-	)
+	).WithTheme(cyberTheme())
 	if err = form.Run(); err != nil {
 		return currentLimit, false, err
 	}
@@ -399,7 +481,7 @@ func ChooseMaxHistory(currentLimit, totalNormalized int) (limit int, saveToConfi
 					Description("Maximum number of commands to send to the LLM (saved to config).").
 					Value(&input),
 			),
-		)
+		).WithTheme(cyberTheme())
 		if err = inputForm.Run(); err != nil {
 			return currentLimit, false, err
 		}
@@ -419,4 +501,16 @@ func joinCommands(entries []history.Entry) string {
 		cmds[i] = e.Command
 	}
 	return strings.Join(cmds, "\n") + "\n"
+}
+
+func cyberTheme() *huh.Theme {
+	t := huh.ThemeBase()
+	t.Focused.Title = t.Focused.Title.Foreground(neonCyan)
+	t.Focused.SelectSelector = lipgloss.NewStyle().Foreground(claudeOrange).SetString("▶ ")
+	t.Focused.SelectedOption = lipgloss.NewStyle().Foreground(matrixGreen)
+	t.Focused.TextInput.Prompt = lipgloss.NewStyle().Foreground(claudeOrange).SetString("> ")
+	t.Focused.TextInput.Cursor = lipgloss.NewStyle().Foreground(matrixGreen)
+	t.Focused.FocusedButton = lipgloss.NewStyle().Background(matrixGreen).Foreground(darkGray).Padding(0, 1)
+	t.Focused.BlurredButton = lipgloss.NewStyle().Foreground(lightGray).Padding(0, 1)
+	return t
 }

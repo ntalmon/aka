@@ -21,6 +21,7 @@ func main() {
 }
 
 func newRootCmd() *cobra.Command {
+	cobra.EnableCommandSorting = false
 	root := &cobra.Command{
 		Use:   "aka",
 		Short: "AKA — shell history scanner and alias manager",

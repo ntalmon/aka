@@ -117,7 +117,7 @@ Rules:
 2. For functions, use $1, $2, etc. for parameters — never hardcode placeholder values.
 3. Suggest short, memorable names following common conventions (e.g., "gco" for "git checkout").
 4. Only suggest aliases/functions that would genuinely save keystrokes and are used repeatedly.
-5. Provide a concise rationale and example usages.
+5. Provide a rationale: one short sentence (max ~120 chars) explaining why this saves time. No line references, no examples.
 6. The template for an alias should be the full command body (without the alias definition syntax).
 7. The template for a function should be the function body using $1, $2 for parameters.
 8. Do NOT include 'alias name=' or 'name() {' in the template — just the body.
