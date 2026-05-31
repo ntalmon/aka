@@ -42,45 +42,74 @@ func runSetKey(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	// Resolve provider: explicit flag skips the prompt; otherwise always ask.
-	provider := providerFlag
-	if provider != "" && provider != "anthropic" && provider != "groq" {
-		return fmt.Errorf("unknown provider %q — must be anthropic or groq", provider)
+	if providerFlag != "" && providerFlag != "anthropic" && providerFlag != "groq" {
+		return fmt.Errorf("unknown provider %q — must be anthropic or groq", providerFlag)
 	}
-	if provider == "" {
-		var err error
-		provider, err = ui.PromptProvider()
-		if err != nil {
-			return fmt.Errorf("select provider: %w", err)
+
+	const (
+		stepProvider = 0
+		stepKey      = 1
+		stepModel    = 2
+	)
+
+	step := stepProvider
+	var provider, key string
+
+	if providerFlag != "" {
+		provider = providerFlag
+		step = stepKey
+	}
+
+	for {
+		switch step {
+		case stepProvider:
+			p, perr := ui.PromptProvider()
+			if perr != nil {
+				return fmt.Errorf("select provider: %w", perr)
+			}
+			provider = p
+			step = stepKey
+
+		case stepKey:
+			// withBack=true only when provider was not fixed by flag.
+			k, kerr := ui.PromptAPIKey(provider, providerFlag == "")
+			if kerr != nil {
+				return fmt.Errorf("prompt API key: %w", kerr)
+			}
+			if k == "" {
+				if providerFlag != "" {
+					return fmt.Errorf("API key cannot be empty")
+				}
+				// Empty = go back to provider selection.
+				step = stepProvider
+				continue
+			}
+			key = k
+			step = stepModel
+
+		case stepModel:
+			model, wentBack, merr := ui.PromptModelWithBack(provider)
+			if merr != nil {
+				return fmt.Errorf("select model: %w", merr)
+			}
+			if wentBack {
+				step = stepKey
+				continue
+			}
+			cfg.Provider = provider
+			cfg.Model = model
+			if provider == "groq" {
+				cfg.GroqAPIKey = key
+			} else {
+				cfg.AnthropicAPIKey = key
+			}
+			if serr := config.Save(cfg); serr != nil {
+				return fmt.Errorf("save config: %w", serr)
+			}
+			ui.PrintSuccess(fmt.Sprintf("✓ %s API key saved to ~/.config/aka/config.toml", provider))
+			return nil
 		}
 	}
-
-	key, err := ui.PromptAPIKey(provider)
-	if err != nil {
-		return fmt.Errorf("prompt API key: %w", err)
-	}
-	if key == "" {
-		return fmt.Errorf("API key cannot be empty")
-	}
-
-	cfg.Provider = provider
-	model, err := ui.PromptModel(provider)
-	if err != nil {
-		return fmt.Errorf("select model: %w", err)
-	}
-	cfg.Model = model
-	if provider == "groq" {
-		cfg.GroqAPIKey = key
-	} else {
-		cfg.AnthropicAPIKey = key
-	}
-
-	if err := config.Save(cfg); err != nil {
-		return fmt.Errorf("save config: %w", err)
-	}
-
-	ui.PrintSuccess(fmt.Sprintf("✓ %s API key saved to ~/.config/aka/config.toml", provider))
-	return nil
 }
 
 func newSetModelCmd() *cobra.Command {
