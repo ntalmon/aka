@@ -142,14 +142,31 @@ lefthook run pre-push
 
 Use **trunk-based development**: feature branches → PR → `main`. There is no long-lived `dev` branch.
 
-For parallel features across multiple Claude sessions, use **git worktrees** — each session gets its own directory checked out to its own branch, sharing the same `.git` repo:
+For parallel features across multiple Claude sessions, use **git worktrees** — each session gets its own directory checked out to its own branch, sharing the same `.git` repo. Keep the main checkout on `main` as your review/merge base and create feature worktrees as siblings of the main checkout (e.g. `../aka-cli.feat-x`):
 
 ```bash
-git worktree add ../aka-feature-x feature-x
-git worktree add ../aka-feature-y feature-y
+git worktree add -b feat-x ../aka-cli.feat-x main
+git worktree add -b feat-y ../aka-cli.feat-y main
 ```
 
-Never run two sessions in the same working directory on different branches — they will stomp on each other's files.
+A useful shell function to add to your rc file — creates the worktree as a sibling and cd's in, working correctly from any linked worktree:
+
+```bash
+wt() {
+  local root
+  root=$(git rev-parse --path-format=absolute --git-common-dir | xargs dirname)
+  git -C "$root" worktree add -b "$1" "${root}.${1//\//-}" main && cd "${root}.${1//\//-}"
+}
+```
+
+Cleanup: always use `git worktree remove` + `git worktree prune` rather than `rm -rf` to keep git's bookkeeping clean. Never run two sessions in the same working directory on different branches — they will stomp on each other's files.
+
+**Two worktree gotchas specific to this repo:**
+
+1. **The real `aka` binary is NOT isolated per worktree.** All runtime state resolves from `$HOME` → `~/.config/aka/...` (there is no `AKA_HOME` override), so `aka scan`/`init`/etc. run from different worktrees share one `installed.json`/`aliases.sh` and will clobber each other. Parallel `go test`/`go build` is fine (tests sandbox `HOME` via `t.Setenv`, the build cache is concurrency-safe). For isolated *manual* smoke-testing of the binary, fake the home dir: `HOME=/tmp/aka-$(basename $PWD) go run ./cmd/aka -- init`.
+2. **Gitignored/untracked files don't propagate to new worktrees.** Notably `.claude/settings.local.json` (local permission allowlist) won't carry over, so fresh worktrees re-prompt for permissions. Promote stable entries into the tracked `.claude/settings.json` if that's annoying. Hooks (lefthook pre-push, PostToolUse gofmt/build) *are* shared automatically — they live in the common `.git` dir and tracked config.
+
+For fire-and-forget exploration from a single session, prefer a subagent with `isolation: "worktree"` (ephemeral, auto-cleaned) over a manual worktree.
 
 ## Release process
 
