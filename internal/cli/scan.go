@@ -92,13 +92,20 @@ func runScan(cmd *cobra.Command, _ []string) error {
 	if historyN > 0 {
 		fmt.Printf("  Custom limit: %d (--history flag)\n", historyN)
 	}
-	entries, err := history.ReadAll(shell)
+	rawEntries, err := history.ReadAll(shell)
 	if err != nil {
 		return fmt.Errorf("read history: %w", err)
 	}
-	totalRaw := len(entries)
+	totalRaw := len(rawEntries)
 
-	// Apply history cursor unless --full-history is set.
+	// Resolve the history-scope situation from the cursor. `fullEntries` is what
+	// "full history" (and every non-prompting case) sends; `newEntries` is the
+	// since-cursor slice used when the user picks "new only". The history-mode
+	// prompt is interactive only when there are few new commands.
+	fullEntries := rawEntries
+	newEntries := rawEntries
+	historyPromptApplies := false
+	historyNewCount := 0
 	if !fullHistory {
 		cursor, _ := config.LoadCursor(shell)
 		if cursor.Total > 0 {
@@ -108,58 +115,80 @@ func runScan(cmd *cobra.Command, _ []string) error {
 				newCount = totalRaw
 			}
 			if newCount < minNewEntries {
-				mode, err := ui.ChooseHistoryMode(newCount, totalRaw)
-				if err != nil || mode == "abort" {
-					fmt.Println("Aborted.")
-					return nil
+				historyPromptApplies = true
+				historyNewCount = newCount
+				if newCount > 0 {
+					newEntries = rawEntries[cursor.Total:]
 				}
-				if mode == "new" && newCount > 0 {
-					entries = entries[cursor.Total:]
-				}
-				// mode == "full": keep all entries (no slice)
 			} else {
-				entries = entries[cursor.Total:]
+				fullEntries = rawEntries[cursor.Total:]
+				newEntries = fullEntries
 				fmt.Printf("  %d new command(s) since last run\n", newCount)
 			}
 		}
 	}
 
-	// Step 3: Normalize.
-	normalized := normalize.Normalize(entries)
-
-	// Limit to maxHistory.
-	if maxHistory > 0 && len(normalized) > maxHistory {
-		chosenLimit, save, err := ui.ChooseMaxHistory(maxHistory, len(normalized))
-		if err != nil {
-			return fmt.Errorf("choose max history: %w", err)
+	entriesForMode := func(mode string) []history.Entry {
+		if mode == "new" {
+			return newEntries
 		}
-		if save {
-			cfg.MaxHistory = chosenLimit
+		return fullEntries
+	}
+	countForMode := func(mode string) int {
+		return len(normalize.Normalize(entriesForMode(mode)))
+	}
+
+	// Interactive scan flow: scope (history range + max-history limit) → censor
+	// review. The scope prompts run as one in-place program (PromptScanScope);
+	// the censor review is a separate step. Pressing back at the censor review
+	// re-runs the scope program. Choices are cheap/deterministic to recompute,
+	// so re-running stays consistent.
+	var censored []history.Entry
+	for {
+		historyMode, maxLimit, maxSave, aborted, scopeErr := ui.PromptScanScope(
+			historyPromptApplies, historyNewCount, totalRaw, maxHistory, countForMode)
+		if scopeErr != nil {
+			return fmt.Errorf("scan scope: %w", scopeErr)
+		}
+		if aborted {
+			fmt.Println("Aborted.")
+			return nil
+		}
+
+		normalized := normalize.Normalize(entriesForMode(historyMode))
+		if maxLimit > 0 && len(normalized) > maxLimit {
+			normalized = normalized[len(normalized)-maxLimit:]
+		}
+		if len(normalized) == 0 {
+			return fmt.Errorf("no commands found after normalization")
+		}
+		if maxLimit != -1 {
+			fmt.Printf("  Sending %d commands\n", len(normalized))
+		}
+
+		candidate, _ := censor.CensorAll(normalized)
+		backAvail := historyPromptApplies || maxLimit != -1
+		result, back, rerr := ui.ReviewCensored(normalized, candidate, backAvail)
+		if rerr != nil {
+			return fmt.Errorf("censor review: %w", rerr)
+		}
+		if back {
+			continue // re-run the scope program
+		}
+		if result == nil {
+			fmt.Println("Aborted — no data sent.")
+			return nil
+		}
+
+		// Persist a changed max_history limit only once the flow commits.
+		if maxSave && maxLimit > 0 {
+			cfg.MaxHistory = maxLimit
 			if saveErr := config.Save(cfg); saveErr != nil {
 				fmt.Printf("Warning: could not save config: %v\n", saveErr)
 			}
 		}
-		if chosenLimit > 0 && len(normalized) > chosenLimit {
-			normalized = normalized[len(normalized)-chosenLimit:]
-		}
-		fmt.Printf("  Sending %d commands\n", len(normalized))
-	}
-
-	if len(normalized) == 0 {
-		return fmt.Errorf("no commands found after normalization")
-	}
-
-	// Step 4: Censor.
-	censored, _ := censor.CensorAll(normalized)
-
-	// Step 5: Show censored diff and ask for confirmation.
-	censored, err = ui.ReviewCensored(normalized, censored)
-	if err != nil {
-		return fmt.Errorf("censor review: %w", err)
-	}
-	if censored == nil {
-		fmt.Println("Aborted — no data sent.")
-		return nil
+		censored = result
+		break
 	}
 
 	// Step 6: Call LLM.
@@ -252,38 +281,67 @@ func filterExistingSuggestions(suggestions []llm.Suggestion, shell string) []llm
 
 // ensureAPIKey prompts for a provider and API key if none is configured, then saves.
 // It is a no-op when a key is already present or the provider is ollama.
+// Back navigation is supported between steps.
 func ensureAPIKey(cfg *config.Config) error {
 	if apiKeyForProvider(cfg) != "" || cfg.Provider == "ollama" {
 		return nil
 	}
 	fmt.Println("No API key configured.")
-	chosenProvider, err := ui.PromptProvider()
-	if err != nil {
-		return fmt.Errorf("select provider: %w", err)
-	}
-	cfg.Provider = chosenProvider
 
-	if chosenProvider != "ollama" {
-		apiKey, err := ui.PromptAPIKey(chosenProvider)
-		if err != nil {
-			return fmt.Errorf("get API key: %w", err)
+	const (
+		stepProvider = 0
+		stepKey      = 1
+		stepModel    = 2
+	)
+	step := stepProvider
+
+	for {
+		switch step {
+		case stepProvider:
+			provider, err := ui.PromptProvider()
+			if err != nil {
+				return fmt.Errorf("select provider: %w", err)
+			}
+			cfg.Provider = provider
+			if provider == "ollama" {
+				step = stepModel
+			} else {
+				step = stepKey
+			}
+
+		case stepKey:
+			apiKey, err := ui.PromptAPIKey(cfg.Provider, true)
+			if err != nil {
+				return fmt.Errorf("get API key: %w", err)
+			}
+			if apiKey == "" {
+				// Empty = go back to provider selection.
+				step = stepProvider
+				continue
+			}
+			setAPIKeyForProvider(cfg, cfg.Provider, apiKey)
+			step = stepModel
+
+		case stepModel:
+			model, wentBack, err := ui.PromptModelWithBack(cfg.Provider)
+			if err != nil {
+				return fmt.Errorf("select model: %w", err)
+			}
+			if wentBack {
+				if cfg.Provider == "ollama" {
+					step = stepProvider
+				} else {
+					step = stepKey
+				}
+				continue
+			}
+			cfg.Model = model
+			if saveErr := config.Save(cfg); saveErr != nil {
+				fmt.Printf("Warning: could not save config: %v\n", saveErr)
+			}
+			return nil
 		}
-		if apiKey == "" {
-			return fmt.Errorf("API key required")
-		}
-		setAPIKeyForProvider(cfg, chosenProvider, apiKey)
 	}
-
-	chosenModel, err := ui.PromptModel(chosenProvider)
-	if err != nil {
-		return fmt.Errorf("select model: %w", err)
-	}
-	cfg.Model = chosenModel
-
-	if saveErr := config.Save(cfg); saveErr != nil {
-		fmt.Printf("Warning: could not save config: %v\n", saveErr)
-	}
-	return nil
 }
 
 func apiKeyForProvider(cfg *config.Config) string {
