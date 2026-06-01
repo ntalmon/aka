@@ -503,6 +503,94 @@ func ParameterizeVars(commands []string) (parameterized []string, varMap map[str
 	return parameterized, varMap
 }
 
+// labelFriendly maps a redaction placeholder label to a human-readable plural noun.
+func labelFriendly(label string) string {
+	switch label {
+	case "TOKEN":
+		return "token"
+	case "SECRET":
+		return "secret"
+	case "PASSWORD":
+		return "password"
+	case "URL_CREDS":
+		return "URL credential"
+	case "COMMIT_HASH":
+		return "commit hash"
+	case "COMMIT_MSG":
+		return "commit message"
+	case "IP":
+		return "IP address"
+	case "HOST":
+		return "hostname"
+	case "VAR":
+		return "variable"
+	default:
+		return strings.ToLower(label)
+	}
+}
+
+// Summarize turns a redaction map (placeholder → original) into a human
+// readable string like "Masked 2 tokens, 1 IP address." When the map is empty
+// it returns "No sensitive data detected."
+func Summarize(redactionMap map[string]string) string {
+	if len(redactionMap) == 0 {
+		return "No sensitive data detected."
+	}
+
+	// Count occurrences per label by parsing placeholder keys like <TOKEN_1>.
+	counts := make(map[string]int)
+	for ph := range redactionMap {
+		// Strip < and > then split on _
+		inner := strings.TrimSuffix(strings.TrimPrefix(ph, "<"), ">")
+		parts := strings.SplitN(inner, "_", 2)
+		if len(parts) > 0 {
+			counts[parts[0]]++
+		}
+	}
+
+	// Emit in deterministic order matching labelFriendly's switch cases.
+	order := []string{"TOKEN", "SECRET", "PASSWORD", "URL_CREDS", "COMMIT_HASH", "COMMIT_MSG", "IP", "HOST", "VAR"}
+	var parts []string
+	for _, label := range order {
+		n := counts[label]
+		if n == 0 {
+			continue
+		}
+		noun := labelFriendly(label)
+		if n != 1 {
+			// Simple pluralisation for known nouns.
+			switch noun {
+			case "IP address":
+				noun = "IP addresses"
+			case "hostname":
+				noun = "hostnames"
+			default:
+				noun += "s"
+			}
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", n, noun))
+	}
+	// Include any unknown labels not in the ordered list.
+	for label, n := range counts {
+		found := false
+		for _, o := range order {
+			if o == label {
+				found = true
+				break
+			}
+		}
+		if !found {
+			noun := labelFriendly(label)
+			if n != 1 {
+				noun += "s"
+			}
+			parts = append(parts, fmt.Sprintf("%d %s", n, noun))
+		}
+	}
+
+	return "Masked " + strings.Join(parts, ", ") + "."
+}
+
 // CensorAll runs both passes sequentially on the command text of each entry,
 // preserving the original timestamps. The internal []string passes are unchanged.
 func CensorAll(entries []history.Entry) (censored []history.Entry, redactionMap map[string]string) {
