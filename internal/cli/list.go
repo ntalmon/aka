@@ -81,7 +81,7 @@ func runList(_ *cobra.Command, _ []string) error {
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
 	nameStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 	kindStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	templateStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	templateStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
 	header := fmt.Sprintf("%-*s %-*s %-*s %-*s %-*s",
 		nameW, "NAME",

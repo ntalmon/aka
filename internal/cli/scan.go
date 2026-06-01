@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -18,6 +19,14 @@ import (
 	"github.com/ntalmon/aka/aka-cli/internal/ui"
 )
 
+// censorModeFlag is a custom pflag.Value whose Type() returns "<mode>" so that
+// --help shows "--censor <mode>" rather than "--censor string".
+type censorModeFlag string
+
+func (f *censorModeFlag) String() string     { return string(*f) }
+func (f *censorModeFlag) Type() string       { return "<mode>" }
+func (f *censorModeFlag) Set(s string) error { *f = censorModeFlag(s); return nil }
+
 // NewScanCmd creates the `aka scan` subcommand.
 func NewScanCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -27,19 +36,49 @@ func NewScanCmd() *cobra.Command {
 an LLM to suggest useful shell aliases and functions.`,
 		RunE: runScan,
 	}
-	cmd.Flags().Int("history", 0, "Max number of history entries to use (0 = use config default)")
-	cmd.Flags().Bool("full-history", false, "Ignore the history cursor and scan the full history")
+	cmd.Flags().SortFlags = false
+	cmd.Flags().String("history", "", `History scope: a number (last N commands), "diff" (since last run), or "full" (all history). Omit to choose interactively.`)
+	censorDefault := censorModeFlag("manual")
+	cmd.Flags().Var(&censorDefault, "censor", `Censor mode: "manual" (interactive review, default), "trust" (skip review), "none" (no censoring — raw commands sent to LLM, WARNING: may expose secrets)`)
 	return cmd
 }
 
-// minNewEntries is the threshold below which the user is warned and asked how to proceed.
-const minNewEntries = 100
+// minDiffCount is the minimum number of new commands required for diff mode to be useful.
+const minDiffCount = 40
+
+// parseHistoryFlag parses the --history flag value.
+// Returns mode ("full", "diff", "last") and n (only used when mode == "last").
+func parseHistoryFlag(s string) (mode string, n int, err error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "full":
+		return "full", 0, nil
+	case "diff":
+		return "diff", 0, nil
+	default:
+		n, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil || n <= 0 {
+			return "", 0, fmt.Errorf("--history: expected a positive number, \"diff\", or \"full\"; got %q", s)
+		}
+		return "last", n, nil
+	}
+}
 
 func runScan(cmd *cobra.Command, _ []string) error {
 	ui.PrintBanner()
 
-	historyN, _ := cmd.Flags().GetInt("history")
-	fullHistory, _ := cmd.Flags().GetBool("full-history")
+	historyFlag, _ := cmd.Flags().GetString("history")
+	censorMode := cmd.Flags().Lookup("censor").Value.String()
+
+	switch censorMode {
+	case "manual", "trust", "none":
+	default:
+		return fmt.Errorf("--censor must be one of: manual, trust, none (got %q)", censorMode)
+	}
+
+	if censorMode == "none" {
+		ui.PrintWarning("No censoring — raw commands sent to LLM. May include secrets or API keys.")
+		fmt.Println()
+	}
 
 	// Detect current shell and verify it has been initialized.
 	shell := detectCurrentShell()
@@ -77,126 +116,131 @@ func runScan(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	maxHistory := cfg.MaxHistory
-	if historyN > 0 {
-		maxHistory = historyN
-	}
-
-	// Step 1: Check/get API key (Ollama needs no key).
+	// Check/get API key (Ollama needs no key).
 	if err := ensureAPIKey(cfg); err != nil {
 		return err
 	}
 	apiKey := apiKeyForProvider(cfg)
 
-	// Step 2: Read history for the current shell.
-	if historyN > 0 {
-		fmt.Printf("  Custom limit: %d (--history flag)\n", historyN)
-	}
+	// Read history for the current shell.
 	rawEntries, err := history.ReadAll(shell)
 	if err != nil {
 		return fmt.Errorf("read history: %w", err)
 	}
 	totalRaw := len(rawEntries)
 
-	// Resolve the history-scope situation from the cursor. `fullEntries` is what
-	// "full history" (and every non-prompting case) sends; `newEntries` is the
-	// since-cursor slice used when the user picks "new only". The history-mode
-	// prompt is interactive only when there are few new commands.
-	fullEntries := rawEntries
-	newEntries := rawEntries
-	historyPromptApplies := false
-	historyNewCount := 0
-	if !fullHistory {
-		cursor, _ := config.LoadCursor(shell)
-		if cursor.Total > 0 {
-			newCount := totalRaw - cursor.Total
-			if newCount < 0 {
-				// History file was rotated/truncated — treat as full history.
-				newCount = totalRaw
-			}
-			if newCount < minNewEntries {
-				historyPromptApplies = true
-				historyNewCount = newCount
-				if newCount > 0 {
-					newEntries = rawEntries[cursor.Total:]
+	// Compute diff since last cursor.
+	cursor, _ := config.LoadCursor(shell)
+	diffCount := totalRaw - cursor.Total
+	if diffCount < 0 {
+		diffCount = totalRaw
+	}
+	var diffEntries []history.Entry
+	if cursor.Total > 0 && cursor.Total < totalRaw {
+		diffEntries = rawEntries[cursor.Total:]
+	} else {
+		diffEntries = rawEntries
+	}
+
+	// Resolve selected entries from --history flag without prompting.
+	interactive := historyFlag == ""
+	var selectedEntries []history.Entry
+	if !interactive {
+		mode, n, perr := parseHistoryFlag(historyFlag)
+		if perr != nil {
+			return perr
+		}
+		switch mode {
+		case "full":
+			selectedEntries = rawEntries
+			ui.PrintStep(fmt.Sprintf("Using full history (%d commands)", totalRaw))
+		case "diff":
+			if diffCount <= minDiffCount {
+				if diffCount == 0 {
+					fmt.Println("No new commands since last scan.")
+				} else {
+					fmt.Printf("  Only %d new command(s) since last scan — not enough to analyze (minimum: %d).\n", diffCount, minDiffCount)
+					fmt.Println("  Run `aka scan` or `aka scan --history full` to include more history.")
 				}
-			} else {
-				fullEntries = rawEntries[cursor.Total:]
-				newEntries = fullEntries
-				fmt.Printf("  %d new command(s) since last run\n", newCount)
+				return nil
 			}
+			selectedEntries = diffEntries
+			ui.PrintStep(fmt.Sprintf("Using diff: %d new commands since last run", diffCount))
+		case "last":
+			if n >= totalRaw {
+				selectedEntries = rawEntries
+			} else {
+				selectedEntries = rawEntries[totalRaw-n:]
+			}
+			ui.PrintStep(fmt.Sprintf("Using last %d commands (--history flag)", n))
 		}
 	}
 
-	entriesForMode := func(mode string) []history.Entry {
-		if mode == "new" {
-			return newEntries
-		}
-		return fullEntries
-	}
-	countForMode := func(mode string) int {
-		return len(normalize.Normalize(entriesForMode(mode)))
-	}
-
-	// Interactive scan flow: scope (history range + max-history limit) → censor
-	// review. The scope prompts run as one in-place program (PromptScanScope);
-	// the censor review is a separate step. Pressing back at the censor review
-	// re-runs the scope program. Choices are cheap/deterministic to recompute,
-	// so re-running stays consistent.
+	// Interactive scope + censor loop. Back at censor review re-runs the scope prompt.
 	var censored []history.Entry
 	for {
-		historyMode, maxLimit, maxSave, aborted, scopeErr := ui.PromptScanScope(
-			historyPromptApplies, historyNewCount, totalRaw, maxHistory, countForMode)
-		if scopeErr != nil {
-			return fmt.Errorf("scan scope: %w", scopeErr)
-		}
-		if aborted {
-			fmt.Println("Aborted.")
-			return nil
+		if interactive {
+			defaultN := cfg.MaxHistory
+			if defaultN <= 0 {
+				defaultN = 500
+			}
+			limit, aborted, perr := ui.PromptHistoryScope(totalRaw, diffCount, defaultN)
+			if perr != nil {
+				return fmt.Errorf("history scope: %w", perr)
+			}
+			if aborted {
+				fmt.Println("Aborted.")
+				return nil
+			}
+			switch {
+			case limit == 0: // full history
+				selectedEntries = rawEntries
+			case limit == -1: // diff
+				selectedEntries = diffEntries
+			default: // last N
+				if limit >= totalRaw {
+					selectedEntries = rawEntries
+				} else {
+					selectedEntries = rawEntries[totalRaw-limit:]
+				}
+			}
 		}
 
-		normalized := normalize.Normalize(entriesForMode(historyMode))
-		if maxLimit > 0 && len(normalized) > maxLimit {
-			normalized = normalized[len(normalized)-maxLimit:]
-		}
+		normalized := normalize.Normalize(selectedEntries)
 		if len(normalized) == 0 {
 			return fmt.Errorf("no commands found after normalization")
 		}
-		if maxLimit != -1 {
-			fmt.Printf("  Sending %d commands\n", len(normalized))
-		}
+		ui.PrintStep(fmt.Sprintf("Reading %d commands...", len(normalized)))
 
-		candidate, _ := censor.CensorAll(normalized)
-		backAvail := historyPromptApplies || maxLimit != -1
-		result, back, rerr := ui.ReviewCensored(normalized, candidate, backAvail)
-		if rerr != nil {
-			return fmt.Errorf("censor review: %w", rerr)
+		var toSend []history.Entry
+		if censorMode == "none" {
+			toSend = normalized
+		} else {
+			toSend, _ = censor.CensorAll(normalized)
 		}
-		if back {
-			continue // re-run the scope program
-		}
-		if result == nil {
-			fmt.Println("Aborted — no data sent.")
-			return nil
-		}
-
-		// Persist a changed max_history limit only once the flow commits.
-		if maxSave && maxLimit > 0 {
-			cfg.MaxHistory = maxLimit
-			if saveErr := config.Save(cfg); saveErr != nil {
-				fmt.Printf("Warning: could not save config: %v\n", saveErr)
+		if censorMode != "manual" {
+			ui.PrintStep(fmt.Sprintf("Skipping review — sending %d commands directly", len(toSend)))
+		} else {
+			ui.PrintCensorDiff(normalized, toSend)
+			result, back, rerr := ui.ReviewCensored(normalized, toSend, interactive)
+			if rerr != nil {
+				return fmt.Errorf("censor review: %w", rerr)
 			}
+			if back {
+				continue // re-run the scope prompt
+			}
+			if result == nil {
+				fmt.Println("Aborted — no data sent.")
+				return nil
+			}
+			toSend = result
 		}
-		censored = result
+		censored = toSend
 		break
 	}
 
-	// Step 6: Call LLM.
-	provName := cfg.Provider
-	if provName == "" {
-		provName = "anthropic"
-	}
-	fmt.Printf("🧠 Analyzing last %d commands for patterns using %s/%s...\n", len(censored), provName, cfg.Model)
+	// Call LLM.
+	ui.PrintStep(llm.FriendlyModelName(cfg.Provider, cfg.Model) + " is analyzing patterns...")
 	provider := buildProvider(cfg, apiKey)
 	suggestions, err := provider.Suggest(context.Background(), censored)
 	for {
@@ -218,14 +262,13 @@ func runScan(cmd *cobra.Command, _ []string) error {
 		fmt.Println("All suggestions already exist as aliases or functions — nothing new to apply.")
 		return nil
 	}
-	fmt.Printf("\n✨ Discovered %d potential productivity enhancements!\n", len(suggestions))
+	fmt.Println()
+	ui.PrintSuggestionsOverview(suggestions)
 
-	// Persist cursor so the next run only processes new commands.
-	if !fullHistory {
-		_ = config.SaveCursor(config.HistoryCursor{Total: totalRaw}, shell)
-	}
+	// Persist cursor so the next run knows where to start diff.
+	_ = config.SaveCursor(config.HistoryCursor{Total: totalRaw}, shell)
 
-	// Step 7: Interactive review.
+	// Interactive review.
 	accepted, err := ui.ReviewSuggestions(suggestions)
 	if err != nil {
 		return fmt.Errorf("review suggestions: %w", err)
@@ -236,7 +279,7 @@ func runScan(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	// Step 8: Apply accepted suggestions.
+	// Apply accepted suggestions.
 	skipped, err := apply.Apply(accepted, shell)
 	if err != nil {
 		return fmt.Errorf("apply: %w", err)

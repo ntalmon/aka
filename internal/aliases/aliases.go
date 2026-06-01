@@ -280,7 +280,7 @@ _aka_completion() {
         completions=(set-key set-max-history show)
         ;;
       scan)
-        completions=(--history --full-history)
+        completions=(--history --censor)
         ;;
     esac
   fi
@@ -308,7 +308,7 @@ _aka_completion() {
         COMPREPLY=( $(compgen -W "set-key set-max-history show" -- "${cur}") )
         ;;
       scan)
-        COMPREPLY=( $(compgen -W "--history --full-history" -- "${cur}") )
+        COMPREPLY=( $(compgen -W "--history --censor" -- "${cur}") )
         ;;
       *)
         COMPREPLY=()

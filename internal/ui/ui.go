@@ -10,83 +10,130 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/term"
-	"github.com/hexops/gotextdiff"
-	"github.com/hexops/gotextdiff/myers"
-	"github.com/hexops/gotextdiff/span"
 
 	"github.com/ntalmon/aka/aka-cli/internal/history"
 	"github.com/ntalmon/aka/aka-cli/internal/llm"
 )
 
 var (
-	matrixGreen  = lipgloss.Color("#00FF41")
-	neonCyan     = lipgloss.Color("#00FFFF")
+	neonCyan     = lipgloss.Color("#22D3EE")
 	claudeOrange = lipgloss.Color("#FF9900")
 	cyberRed     = lipgloss.Color("#FF003C")
+	neonGreen    = lipgloss.Color("#22C55E")
 	darkGray     = lipgloss.Color("#303030")
 	lightGray    = lipgloss.Color("#A0A0A0")
+	brightWhite  = lipgloss.Color("#FFFFFF")
 
-	titleStyle        = lipgloss.NewStyle().Bold(true).Foreground(matrixGreen)
-	addStyle          = lipgloss.NewStyle().Foreground(matrixGreen)
-	removeStyle       = lipgloss.NewStyle().Foreground(cyberRed)
-	headerStyle       = lipgloss.NewStyle().Foreground(neonCyan)
-	mutedStyle        = lipgloss.NewStyle().Foreground(lightGray)
-	successStyle      = lipgloss.NewStyle().Bold(true).Foreground(matrixGreen)
-	aliasCodeStyle    = lipgloss.NewStyle().Foreground(neonCyan).Bold(true).Background(darkGray).Padding(0, 1)
-	patternLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(matrixGreen)
-	aliasLabelStyle   = lipgloss.NewStyle().Bold(true).Foreground(neonCyan)
-	templateStyle     = lipgloss.NewStyle().Foreground(lightGray)
-	successBarStyle   = lipgloss.NewStyle().
+	titleStyle         = lipgloss.NewStyle().Bold(true).Foreground(neonCyan)
+	removeStyle        = lipgloss.NewStyle().Foreground(cyberRed)
+	addStyle           = lipgloss.NewStyle().Foreground(neonGreen)
+	headerStyle        = lipgloss.NewStyle().Bold(true).Foreground(claudeOrange)
+	mutedStyle         = lipgloss.NewStyle().Foreground(lightGray)
+	successStyle       = lipgloss.NewStyle().Bold(true).Foreground(neonCyan)
+	aliasCodeStyle     = lipgloss.NewStyle().Foreground(neonCyan).Bold(true).Background(darkGray).Padding(0, 1)
+	aliasLabelStyle    = lipgloss.NewStyle().Foreground(neonCyan)
+	templateStyle      = lipgloss.NewStyle().Foreground(lightGray)
+	overviewIndexStyle = lipgloss.NewStyle().Bold(true).Foreground(claudeOrange)
+	sectionStyle       = lipgloss.NewStyle().Bold(true).Foreground(neonCyan)
+	nameStyle          = lipgloss.NewStyle().Bold(true).Foreground(brightWhite)
+	commandLineStyle   = lipgloss.NewStyle().Foreground(lightGray)
+	successBarStyle    = lipgloss.NewStyle().
 				BorderLeft(true).
 				BorderStyle(lipgloss.NormalBorder()).
-				BorderForeground(matrixGreen).
+				BorderForeground(neonCyan).
 				PaddingLeft(1).
-				Foreground(matrixGreen)
+				Foreground(neonCyan)
 
 	suggestionBoxStyle = lipgloss.NewStyle().
 				BorderStyle(lipgloss.RoundedBorder()).
-				BorderForeground(matrixGreen).
+				BorderForeground(neonCyan).
 				Padding(1, 2).
 				MarginBottom(1)
-
-	bannerIconStyle     = lipgloss.NewStyle().Foreground(claudeOrange)
-	bannerSubtitleStyle = lipgloss.NewStyle().Foreground(neonCyan)
 )
 
-const asciiArt = `
- █████╗ ██╗  ██╗ █████╗
-██╔══██╗██║ ██╔╝██╔══██╗
-███████║█████╔╝ ███████║
-██╔══██║██╔═██╗ ██╔══██║
-██║  ██║██║  ██╗██║  ██║
-╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝`
+const asciiArt = `    ___    __ __ ___
+   /   |  / //_//   |
+  / /| | / ,<  / /| |
+ / ___ |/ /| |/ ___ |
+/_/  |_/_/ |_/_/  |_|`
 
 func PrintBanner() {
 	fmt.Println(titleStyle.Render(asciiArt))
-	fmt.Print("  " + bannerIconStyle.Render("⚡") + " " + bannerSubtitleStyle.Render("AKA — Your AI Shell Assistant") + "\n\n")
+	fmt.Println("" + lipgloss.NewStyle().Foreground(claudeOrange).Render("⚡") + " " + mutedStyle.Render("AKA — Your AI Shell Assistant") + "\n")
 }
 
-// ReviewCensored renders a diff of original vs censored commands and asks the
-// user how to proceed. Returns the entries to send (possibly edited); back is
-// true when the user navigated back (only possible when withBack is true), and
-// (nil, false, nil) means the user aborted.
-func ReviewCensored(original, censored []history.Entry, withBack bool) (entries []history.Entry, back bool, err error) {
-	printCensorDiff(original, censored)
+// PrintStep prints a muted tree-connector progress line: "  └─ <text>".
+func PrintStep(text string) {
+	fmt.Println(mutedStyle.Render("  └─ " + text))
+}
 
+// PrintStepLabeled prints a progress line with an orange label: "  └─ <label> <text>".
+func PrintStepLabeled(label, text string) {
+	fmt.Println(mutedStyle.Render("  └─ ") + headerStyle.Render(label) + " " + mutedStyle.Render(text))
+}
+
+// PrintCensorDiff prints a diff of commands modified by the censor pass.
+// Unchanged commands are omitted; changed ones show the original in red and
+// the censored replacement in green.
+func PrintCensorDiff(original, censored []history.Entry) {
+	const maxLines = 50 // each changed entry prints 2 lines
+	lines := 0
+	changed := 0
+	for i, orig := range original {
+		if i >= len(censored) {
+			break
+		}
+		if orig.Command != censored[i].Command {
+			changed++
+			if lines+2 <= maxLines {
+				fmt.Println(removeStyle.Render("- " + orig.Command))
+				fmt.Println(addStyle.Render("+ " + censored[i].Command))
+				lines += 2
+			}
+		}
+	}
+	if changed == 0 {
+		fmt.Println(lipgloss.NewStyle().Bold(true).Foreground(neonGreen).Render("  ✓ No sensitive data detected."))
+	} else {
+		shown := lines / 2
+		suffix := ""
+		if shown < changed {
+			suffix = fmt.Sprintf(" (%d more not shown)", changed-shown)
+		}
+		fmt.Println(mutedStyle.Render(fmt.Sprintf("  %d of %d command(s) modified by censor.%s", changed, len(original), suffix)))
+	}
+	fmt.Println()
+}
+
+// ReviewCensored asks whether to send the censored commands to the LLM.
+// Returns the entries to send (possibly edited); back is true when the user
+// navigated back (only possible when withBack is true), and (nil, false, nil)
+// means the user aborted.
+func ReviewCensored(original, censored []history.Entry, withBack bool) (entries []history.Entry, back bool, err error) {
 	const (
 		optSend  = "send"
 		optEdit  = "edit"
 		optAbort = "abort"
 	)
+	anyCensored := false
+	for i := range censored {
+		if i < len(original) && original[i].Command != censored[i].Command {
+			anyCensored = true
+			break
+		}
+	}
 	opts := []huh.Option[string]{
 		huh.NewOption(fmt.Sprintf("Yes, send %d commands", len(censored)), optSend),
-		huh.NewOption("Edit censored commands manually first", optEdit),
-		huh.NewOption("No, abort", optAbort),
 	}
+	if anyCensored {
+		opts = append(opts, huh.NewOption("Edit censored commands manually first", optEdit))
+	}
+	opts = append(opts, huh.NewOption("No, abort", optAbort))
 	choice, wentBack, err := runSelectWithBack(fmt.Sprintf("Send %d commands to the LLM?", len(censored)), "", opts, withBack)
 	if err != nil {
 		return nil, false, err
@@ -102,35 +149,6 @@ func ReviewCensored(original, censored []history.Entry, withBack bool) (entries 
 		return edited, false, eerr
 	default:
 		return censored, false, nil
-	}
-}
-
-func printCensorDiff(original, censored []history.Entry) {
-	origText := joinCommands(original)
-	censoredText := joinCommands(censored)
-
-	edits := myers.ComputeEdits(span.URIFromPath("original"), origText, censoredText)
-	diff := fmt.Sprint(gotextdiff.ToUnified("original (local only)", "censored (will be sent)", origText, edits))
-
-	fmt.Println(titleStyle.Render("=== Censor Preview ==="))
-	fmt.Println(mutedStyle.Render("The following diff shows what will be sent to the LLM."))
-	fmt.Println(mutedStyle.Render("Red lines stay local only; green lines replace them in the API call.\n"))
-
-	if diff == "" {
-		fmt.Println(successStyle.Render("No sensitive data detected — commands will be sent as-is."))
-	} else {
-		for _, line := range strings.Split(diff, "\n") {
-			switch {
-			case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
-				fmt.Println(headerStyle.Render(line))
-			case strings.HasPrefix(line, "+"):
-				fmt.Println(addStyle.Render(line))
-			case strings.HasPrefix(line, "-"):
-				fmt.Println(removeStyle.Render(line))
-			default:
-				fmt.Println(line)
-			}
-		}
 	}
 }
 
@@ -198,6 +216,23 @@ type reviewFlowModel struct {
 	aborted     bool
 }
 
+// splitTemplate splits a shell template into individual command lines by && and newlines.
+func splitTemplate(tmpl string) []string {
+	s := strings.ReplaceAll(tmpl, "&&", "\n")
+	s = strings.ReplaceAll(s, " ;", "\n")
+	var lines []string
+	for _, l := range strings.Split(s, "\n") {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) == 0 {
+		return []string{tmpl}
+	}
+	return lines
+}
+
 func (m *reviewFlowModel) suggestionView() string {
 	s := m.suggestions[m.current]
 	boxW := m.termWidth - 4
@@ -206,15 +241,17 @@ func (m *reviewFlowModel) suggestionView() string {
 	}
 	bs := suggestionBoxStyle.Width(boxW)
 
-	pattern := patternLabelStyle.Render(fmt.Sprintf("[%d/%d] PATTERN FOUND:", m.current+1, len(m.suggestions)))
-	tmpl := templateStyle.Render(sanitizeForDisplay(s.Template))
-	aliasLbl := aliasLabelStyle.Render("↳ SUGGESTED ALIAS:")
-	aliasVal := aliasCodeStyle.Render(sanitizeForDisplay(buildInvocation(s)))
+	header := overviewIndexStyle.Render(fmt.Sprintf("❯ [%d/%d]", m.current+1, len(m.suggestions))) +
+		" " + nameStyle.Render(sanitizeForDisplay(s.Name))
 
-	parts := []string{
-		fmt.Sprintf("%s  %s", pattern, tmpl),
-		fmt.Sprintf("%s  %s", aliasLbl, aliasVal),
+	cmdLines := splitTemplate(sanitizeForDisplay(s.Template))
+	parts := []string{header}
+	for _, c := range cmdLines {
+		parts = append(parts, commandLineStyle.Render("  │ "+c))
 	}
+	parts = append(parts, aliasLabelStyle.Render("↳ runs as:")+"  "+
+		aliasCodeStyle.Render(sanitizeForDisplay(buildInvocation(s))))
+
 	if s.Rationale != "" {
 		r := sanitizeForDisplay(s.Rationale)
 		if idx := strings.IndexAny(r, ".!?"); idx >= 0 && idx < len(r)-1 {
@@ -236,7 +273,7 @@ func (m *reviewFlowModel) toReview() tea.Cmd {
 		huh.NewOption(fmt.Sprintf("Edit name  (current: %s)", sanitizeForDisplay(m.suggestions[m.current].Name)), "edit"),
 		huh.NewOption("Skip", "skip"),
 	}
-	m.active = newBackableSelect("Accept this suggestion?", opts, &m.choice)
+	m.active = newBackableSelect("Accept this suggestion?", opts, &m.choice).WithKeyMap(noFilterKeyMap())
 	m.active.CancelCmd = tea.Quit
 	return m.active.Init()
 }
@@ -329,6 +366,76 @@ func (m *reviewFlowModel) View() string {
 	}
 	// Back to the previous suggestion is available from the second one onward.
 	return m.suggestionView() + m.active.View() + footerWithBack(m.active, m.current > 0)
+}
+
+// indexedSugg pairs a display index with a suggestion for overview rendering.
+type indexedSugg struct {
+	idx int
+	s   llm.Suggestion
+}
+
+// PrintSuggestionsOverview prints the grouped "✨ AKA FOUND N UPGRADES" summary
+// before the interactive per-suggestion review begins.
+func PrintSuggestionsOverview(suggestions []llm.Suggestion) {
+	n := len(suggestions)
+	label := "UPGRADES"
+	if n == 1 {
+		label = "UPGRADE"
+	}
+	fmt.Println(nameStyle.Render(fmt.Sprintf("✨ AKA FOUND %d %s", n, label)))
+	fmt.Println(mutedStyle.Render(strings.Repeat("─", 32)))
+
+	var workflows, oneliners []indexedSugg
+	for i, s := range suggestions {
+		if s.Kind == "function" {
+			workflows = append(workflows, indexedSugg{i + 1, s})
+		} else {
+			oneliners = append(oneliners, indexedSugg{i + 1, s})
+		}
+	}
+
+	if len(workflows) > 0 {
+		fmt.Println()
+		fmt.Println(sectionStyle.Render("WORKFLOWS (MULTI-COMMAND)"))
+		for _, is := range workflows {
+			printOverviewEntry(is.idx, is.s)
+		}
+	}
+	if len(oneliners) > 0 {
+		fmt.Println()
+		fmt.Println(sectionStyle.Render("ALIASES (ONE-LINERS)"))
+		for _, is := range oneliners {
+			printOverviewEntry(is.idx, is.s)
+		}
+	}
+	fmt.Println()
+}
+
+func printOverviewEntry(idx int, s llm.Suggestion) {
+	prefix := overviewIndexStyle.Render(fmt.Sprintf("❯ [%d]", idx)) + " "
+	name := sanitizeForDisplay(s.Name)
+	cmdLines := splitTemplate(sanitizeForDisplay(s.Template))
+
+	if s.Kind != "function" || len(cmdLines) == 1 {
+		fmt.Println(prefix + nameStyle.Render(name) +
+			mutedStyle.Render("  →  ") + commandLineStyle.Render(cmdLines[0]))
+		return
+	}
+
+	fmt.Println(prefix + nameStyle.Render(name))
+	if s.Rationale != "" {
+		r := sanitizeForDisplay(s.Rationale)
+		if i := strings.IndexAny(r, ".!?"); i >= 0 && i < len(r)-1 {
+			r = r[:i+1]
+		}
+		if len(r) > 100 {
+			r = r[:97] + "..."
+		}
+		fmt.Println(mutedStyle.Render("     " + r))
+	}
+	for _, c := range cmdLines {
+		fmt.Println(commandLineStyle.Render("     │ " + c))
+	}
 }
 
 // ReviewSuggestions presents suggestions one at a time with Accept/Edit/Skip/Back.
@@ -432,19 +539,23 @@ func footerWithBack(form *huh.Form, withBack bool) string {
 }
 
 // backableModel wraps a huh.Form and intercepts the left arrow key so the
-// caller can treat it as "go back" without the form consuming it. Its footer
-// always shows the "← back" hint.
+// caller can treat it as "go back" without the form consuming it. When
+// withBack is true the footer includes "← back"; when false it still shows
+// the navigation hint (↑↓ / enter) for consistency with other menus.
 type backableModel struct {
 	form     *huh.Form
+	withBack bool
 	wentBack bool
 }
 
 func (m backableModel) Init() tea.Cmd { return m.form.Init() }
 
 func (m backableModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyLeft {
-		m.wentBack = true
-		return m, tea.Quit
+	if m.withBack {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyLeft {
+			m.wentBack = true
+			return m, tea.Quit
+		}
 	}
 	updated, cmd := m.form.Update(msg)
 	if f, ok := updated.(*huh.Form); ok {
@@ -453,7 +564,7 @@ func (m backableModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m backableModel) View() string { return m.form.View() + footerWithBack(m.form, true) }
+func (m backableModel) View() string { return m.form.View() }
 
 // runFormWithBack runs a huh.Form but intercepts the left arrow key as "back".
 // Returns wentBack=true when the user pressed ←; the Value pointer is populated
@@ -463,7 +574,7 @@ func runFormWithBack(form *huh.Form) (wentBack bool, err error) {
 	form.CancelCmd = tea.Quit
 
 	result, runErr := tea.NewProgram(
-		backableModel{form: form},
+		backableModel{form: form, withBack: true},
 		tea.WithOutput(os.Stderr),
 		tea.WithContext(context.Background()),
 		tea.WithReportFocus(),
@@ -481,22 +592,97 @@ func runFormWithBack(form *huh.Form) (wentBack bool, err error) {
 	return false, nil
 }
 
+// simpleSelectModel is a minimal custom bubbletea select list that renders its
+// own footer. It avoids wrapping huh so the footer line is never clipped by
+// huh's internal escape sequences confusing bubbletea's line counter.
+type simpleSelectModel struct {
+	title    string
+	opts     []huh.Option[string]
+	cursor   int
+	withBack bool
+	Chosen   string
+	Aborted  bool
+	WentBack bool
+}
+
+func (m *simpleSelectModel) Init() tea.Cmd { return nil }
+
+func (m *simpleSelectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.Type {
+		case tea.KeyCtrlC, tea.KeyEsc:
+			m.Aborted = true
+			return m, tea.Quit
+		case tea.KeyLeft:
+			if m.withBack {
+				m.WentBack = true
+				return m, tea.Quit
+			}
+		case tea.KeyUp:
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case tea.KeyDown:
+			if m.cursor < len(m.opts)-1 {
+				m.cursor++
+			}
+		case tea.KeyEnter:
+			m.Chosen = m.opts[m.cursor].Value
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+func (m *simpleSelectModel) View() string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(nameStyle.Render(m.title))
+	sb.WriteString("\n\n")
+	for i, opt := range m.opts {
+		selector := "  "
+		if i == m.cursor {
+			selector = lipgloss.NewStyle().Foreground(claudeOrange).Render("▶ ")
+		}
+		var label string
+		if i == m.cursor {
+			label = lipgloss.NewStyle().Foreground(neonCyan).Render(opt.Key)
+		} else {
+			label = mutedStyle.Render(opt.Key)
+		}
+		fmt.Fprintf(&sb, "%s%s\n", selector, label)
+	}
+	sb.WriteString("\n")
+	hint := "↑↓ navigate  •  enter confirm"
+	if m.withBack {
+		hint += "  •  ← back"
+	}
+	sb.WriteString(mutedStyle.Render(hint) + "\n")
+	return sb.String()
+}
+
 // runSelectWithBack renders a single select prompt. When withBack is true the
 // left arrow / "← back" footer returns wentBack=true; otherwise it returns the
 // chosen option value. desc is an optional description line (empty = none).
 func runSelectWithBack(title, desc string, opts []huh.Option[string], withBack bool) (value string, wentBack bool, err error) {
-	var selected string
-	sel := huh.NewSelect[string]().Title(title).Options(opts...).Value(&selected)
-	if desc != "" {
-		sel = sel.Description(desc)
+	_ = desc // currently unused; callers pass "" for the censor review
+	m := &simpleSelectModel{title: title, opts: opts, withBack: withBack}
+	result, runErr := tea.NewProgram(m,
+		tea.WithOutput(os.Stderr),
+		tea.WithContext(context.Background()),
+		tea.WithReportFocus(),
+	).Run()
+	if runErr != nil {
+		return "", false, fmt.Errorf("select: %w", runErr)
 	}
-	if !withBack {
-		form := huh.NewForm(huh.NewGroup(sel)).WithTheme(cyberTheme())
-		return selected, false, form.Run()
+	sm := result.(*simpleSelectModel)
+	if sm.WentBack {
+		return "", true, nil
 	}
-	form := huh.NewForm(huh.NewGroup(sel)).WithTheme(cyberTheme()).WithShowHelp(false)
-	wentBack, err = runFormWithBack(form)
-	return selected, wentBack, err
+	if sm.Aborted {
+		return "", false, huh.ErrUserAborted
+	}
+	return sm.Chosen, false, nil
 }
 
 // promptProviderSelect shows the provider picker. When withBack is true, the
@@ -750,261 +936,226 @@ func PrintError(msg string) {
 	fmt.Fprintln(os.Stderr, removeStyle.Render("Error: "+msg))
 }
 
+// PrintWarning prints a prominent warning line to stdout.
+func PrintWarning(msg string) {
+	fmt.Println(removeStyle.Render("⚠  " + msg))
+}
+
 // PrintSuccess prints a success message.
 func PrintSuccess(msg string) {
 	fmt.Println(successStyle.Render(msg))
 }
 
-// Scan-scope step indices.
+// histScopeOptKind enumerates the options in the history scope picker.
+type histScopeOptKind int
+
 const (
-	scopeHistory  = iota // pick history range (only when historyApplies)
-	scopeMax             // max_history limit choice
-	scopeMaxInput        // "change limit" text input
+	histOptKindFull histScopeOptKind = iota
+	histOptKindDiff
+	histOptKindCustom
+	histOptKindAbort
 )
 
-// Scan-scope option values.
-const (
-	scopeOptNew    = "new"
-	scopeOptFull   = "full"
-	scopeOptAbort  = "abort"
-	scopeOptKeep   = "keep"
-	scopeOptAll    = "all"
-	scopeOptChange = "change"
-)
+// historyScopeModel is a single-screen history scope picker. All options are
+// visible simultaneously; the "last N commands" row embeds an inline text input
+// so the number is editable without any step transition or screen change.
+// Limit: 0 = full history, -1 = diff, N > 0 = last N commands.
+type historyScopeModel struct {
+	totalCount int
+	diffCount  int
 
-// scanScopeModel runs the history-scope and max-history prompts as a single
-// bubbletea program so back navigation between them happens in-place (rather
-// than reprinting a fresh menu below the previous one). The max-history prompt
-// applies only when the normalized count for the chosen mode exceeds the limit,
-// which is why the model needs countForMode to recompute on each transition.
-type scanScopeModel struct {
-	historyApplies  bool
-	historyNewCount int
-	totalCount      int
-	maxHistory      int
-	countForMode    func(mode string) int
+	opts   []histScopeOptKind
+	cursor int
+	input  textinput.Model
 
-	step           int
-	active         *huh.Form
-	historyChoice  string
-	maxChoice      string
-	maxInput       string
-	normalizedSeen int // count shown in the max prompt title
-
-	// results
-	historyMode string
-	maxLimit    int // -1 = max prompt N/A; 0 = send all; >0 = cap
-	maxSave     bool
-	aborted     bool
+	Limit   int
+	Aborted bool
 }
 
-func (m *scanScopeModel) toHistory() tea.Cmd {
-	m.step = scopeHistory
-	m.historyChoice = ""
-	opts := []huh.Option[string]{
-		huh.NewOption(fmt.Sprintf("Send full history (%d commands)", m.totalCount), scopeOptFull),
-		huh.NewOption("Abort", scopeOptAbort),
+func newHistoryScopeModel(totalCount, diffCount, defaultN int) *historyScopeModel {
+	ti := textinput.New()
+	ti.SetValue(strconv.Itoa(defaultN))
+	ti.Width = 6
+	ti.CharLimit = 8
+	ti.Prompt = ""
+	ti.TextStyle = lipgloss.NewStyle().Foreground(neonCyan)
+	ti.CursorStyle = lipgloss.NewStyle().Foreground(claudeOrange)
+
+	opts := []histScopeOptKind{histOptKindFull}
+	if diffCount > 40 && diffCount < totalCount {
+		opts = append(opts, histOptKindDiff)
 	}
-	title := fmt.Sprintf("Only %d new command(s) since last run.", m.historyNewCount)
-	if m.historyNewCount >= 50 {
-		opts = append([]huh.Option[string]{
-			huh.NewOption(fmt.Sprintf("Scan %d new command(s) only", m.historyNewCount), scopeOptNew),
-		}, opts...)
-		title = fmt.Sprintf("Only %d new command(s) since last run — not many to work with.", m.historyNewCount)
+	opts = append(opts, histOptKindCustom, histOptKindAbort)
+
+	return &historyScopeModel{
+		totalCount: totalCount,
+		diffCount:  diffCount,
+		opts:       opts,
+		input:      ti,
 	}
-	m.active = newBackableSelect(title, opts, &m.historyChoice)
-	m.active.CancelCmd = tea.Quit
-	return m.active.Init()
 }
 
-// enterMax decides whether the max-history prompt applies for the chosen mode.
-// When it does not, the model is done and quits; otherwise it shows the prompt.
-func (m *scanScopeModel) enterMax() tea.Cmd {
-	count := m.countForMode(m.historyMode)
-	if m.maxHistory <= 0 || count <= m.maxHistory {
-		m.maxLimit = -1
-		return tea.Quit
-	}
-	m.normalizedSeen = count
-	return m.toMax()
-}
+func (m *historyScopeModel) currentOpt() histScopeOptKind { return m.opts[m.cursor] }
 
-func (m *scanScopeModel) toMax() tea.Cmd {
-	m.step = scopeMax
-	m.maxChoice = ""
-	opts := []huh.Option[string]{
-		huh.NewOption(fmt.Sprintf("Continue with %d most recent (current limit)", m.maxHistory), scopeOptKeep),
-		huh.NewOption(fmt.Sprintf("Send all %d commands this run", m.normalizedSeen), scopeOptAll),
-		huh.NewOption("Change max_history limit", scopeOptChange),
-	}
-	title := fmt.Sprintf("%d commands after normalization, but max_history is set to %d.", m.normalizedSeen, m.maxHistory)
-	m.active = huh.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title(title).
-			Description("Only the most recent commands will be sent unless you adjust the limit.").
-			Options(opts...).
-			Value(&m.maxChoice),
-	)).WithTheme(cyberTheme()).WithShowHelp(false)
-	m.active.CancelCmd = tea.Quit
-	return m.active.Init()
-}
+func (m *historyScopeModel) Init() tea.Cmd { return nil }
 
-func (m *scanScopeModel) toMaxInput() tea.Cmd {
-	m.step = scopeMaxInput
-	m.maxInput = ""
-	m.active = huh.NewForm(huh.NewGroup(
-		huh.NewInput().
-			Title("New max_history limit:").
-			Description("Maximum number of commands to send to the LLM (saved to config).\nLeave empty to go back.").
-			Value(&m.maxInput).
-			Validate(func(s string) error {
-				s = strings.TrimSpace(s)
-				if s == "" {
-					return nil // empty = go back
-				}
-				if n, err := strconv.Atoi(s); err != nil || n <= 0 {
-					return fmt.Errorf("must be a positive integer")
-				}
-				return nil
-			}),
-	)).WithTheme(cyberTheme())
-	m.active.CancelCmd = tea.Quit
-	return m.active.Init()
-}
-
-func (m *scanScopeModel) Init() tea.Cmd {
-	if m.historyApplies {
-		return m.toHistory()
-	}
-	return m.enterMax()
-}
-
-func (m *scanScopeModel) advance() tea.Cmd {
-	switch m.step {
-	case scopeHistory:
-		switch m.historyChoice {
-		case scopeOptAbort:
-			m.aborted = true
-			return tea.Quit
-		case scopeOptNew:
-			m.historyMode = "new"
-		default:
-			m.historyMode = "full"
+func (m *historyScopeModel) selectCurrent() (tea.Model, tea.Cmd) {
+	switch m.currentOpt() {
+	case histOptKindFull:
+		m.Limit = 0
+	case histOptKindDiff:
+		m.Limit = -1
+	case histOptKindCustom:
+		n, err := strconv.Atoi(strings.TrimSpace(m.input.Value()))
+		if err != nil || n <= 0 {
+			return m, nil // invalid number — keep waiting
 		}
-		return m.enterMax()
-	case scopeMax:
-		switch m.maxChoice {
-		case scopeOptAll:
-			m.maxLimit = 0
-			return tea.Quit
-		case scopeOptChange:
-			return m.toMaxInput()
-		default: // keep current limit
-			m.maxLimit = m.maxHistory
-			return tea.Quit
-		}
-	case scopeMaxInput:
-		s := strings.TrimSpace(m.maxInput)
-		if s == "" {
-			return m.toMax() // empty = back to the max choice
-		}
-		n, _ := strconv.Atoi(s) // validated in the input
-		m.maxLimit = n
-		m.maxSave = true
-		return tea.Quit
+		m.Limit = n
+	default: // abort
+		m.Aborted = true
 	}
-	return tea.Quit
+	return m, tea.Quit
 }
 
-// back handles ← on a select step: navigate to the previous step, or — when
-// this is the first interactive prompt — back out of the scan entirely.
-func (m *scanScopeModel) back() tea.Cmd {
-	if m.step == scopeMax && m.historyApplies {
-		return m.toHistory()
+func (m *historyScopeModel) moveCursor(delta int) tea.Cmd {
+	next := m.cursor + delta
+	if next < 0 || next >= len(m.opts) {
+		return nil
 	}
-	// First interactive prompt: back exits the command.
-	m.aborted = true
-	return tea.Quit
+	m.cursor = next
+	if m.currentOpt() == histOptKindCustom {
+		return m.input.Focus()
+	}
+	m.input.Blur()
+	return nil
 }
 
-func (m *scanScopeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// ← navigates back on the select steps. On the text input ← moves the
-	// cursor, so back there is via empty submit (handled in advance).
-	if m.step != scopeMaxInput {
-		if k, ok := msg.(tea.KeyMsg); ok && k.Type == tea.KeyLeft {
-			return m, m.back()
+func (m *historyScopeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.Type {
+		case tea.KeyCtrlC, tea.KeyEsc:
+			m.Aborted = true
+			return m, tea.Quit
+		case tea.KeyLeft:
+			// ← aborts on non-input rows; on the custom row it moves the cursor within the text.
+			if m.currentOpt() != histOptKindCustom {
+				m.Aborted = true
+				return m, tea.Quit
+			}
+		case tea.KeyUp:
+			return m, m.moveCursor(-1)
+		case tea.KeyDown:
+			return m, m.moveCursor(1)
+		case tea.KeyEnter:
+			return m.selectCurrent()
 		}
 	}
-	updated, cmd := m.active.Update(msg)
-	if f, ok := updated.(*huh.Form); ok {
-		m.active = f
+	// Remaining messages (textinput.Blink and unhandled keys) go to the inline
+	// input when the custom row is active.
+	if m.currentOpt() == histOptKindCustom {
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
 	}
-	switch m.active.State {
-	case huh.StateAborted:
-		m.aborted = true
-		return m, tea.Quit
-	case huh.StateCompleted:
-		return m, m.advance()
-	}
-	return m, cmd
+	return m, nil
 }
 
-func (m *scanScopeModel) View() string {
-	if m.active == nil {
-		return ""
+func (m *historyScopeModel) View() string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(nameStyle.Render("How much history to send to the LLM?"))
+	sb.WriteString("\n\n")
+
+	onCustom := m.currentOpt() == histOptKindCustom
+
+	for i, opt := range m.opts {
+		selected := i == m.cursor
+		selector := "  "
+		if selected {
+			selector = lipgloss.NewStyle().Foreground(claudeOrange).Render("▶ ")
+		}
+
+		var label string
+		switch opt {
+		case histOptKindFull:
+			raw := fmt.Sprintf("Send full history (%d commands)", m.totalCount)
+			if selected {
+				label = lipgloss.NewStyle().Foreground(neonCyan).Render(raw)
+			} else {
+				label = mutedStyle.Render(raw)
+			}
+		case histOptKindDiff:
+			raw := fmt.Sprintf("Send %d new commands (since last run)", m.diffCount)
+			if selected {
+				label = lipgloss.NewStyle().Foreground(neonCyan).Render(raw)
+			} else {
+				label = mutedStyle.Render(raw)
+			}
+		case histOptKindCustom:
+			raw := fmt.Sprintf("Send last %s commands", m.input.Value())
+			if selected {
+				label = lipgloss.NewStyle().Foreground(neonCyan).Render(raw)
+			} else {
+				label = mutedStyle.Render(raw)
+			}
+		case histOptKindAbort:
+			if selected {
+				label = lipgloss.NewStyle().Foreground(neonCyan).Render("Abort")
+			} else {
+				label = mutedStyle.Render("Abort")
+			}
+		}
+
+		sb.WriteString(selector + label + "\n")
 	}
-	if m.step == scopeMaxInput {
-		return m.active.View() // input keeps its own footer
+
+	sb.WriteString("\n")
+	if onCustom {
+		fmt.Fprintf(&sb, "  %s %s\n\n",
+			lipgloss.NewStyle().Foreground(claudeOrange).Render("How many?"),
+			m.input.View(),
+		)
 	}
-	// Both select steps offer back (← back): the max step returns to the
-	// history step, and the first step backs out of the scan.
-	return m.active.View() + footerWithBack(m.active, true)
+	footer := "↑↓ navigate  •  enter confirm  •  ← abort"
+	if onCustom {
+		footer = "↑↓ navigate  •  type number  •  enter confirm"
+	}
+	sb.WriteString(mutedStyle.Render(footer) + "\n")
+	return sb.String()
 }
 
-// PromptScanScope runs the history-scope and max-history prompts as one program
-// with in-place back navigation. countForMode returns the normalized command
-// count for a given history mode ("new"/"full"/"") so the model can decide
-// whether the max prompt applies. Returns the chosen history mode (empty when
-// the history prompt did not apply), the max limit (-1 = max prompt did not
-// apply, 0 = send all, >0 = cap), whether to persist the limit, and whether the
-// user aborted.
-func PromptScanScope(historyApplies bool, historyNewCount, totalCount, maxHistory int, countForMode func(mode string) int) (historyMode string, maxLimit int, maxSave, aborted bool, err error) {
-	m := &scanScopeModel{
-		historyApplies:  historyApplies,
-		historyNewCount: historyNewCount,
-		totalCount:      totalCount,
-		maxHistory:      maxHistory,
-		countForMode:    countForMode,
-		maxLimit:        -1,
-	}
+// PromptHistoryScope shows a single-screen history scope picker.
+// Returns limit (0=full history, -1=diff, N>0=last N commands), aborted, and any error.
+func PromptHistoryScope(totalCount, diffCount, defaultN int) (limit int, aborted bool, err error) {
+	m := newHistoryScopeModel(totalCount, diffCount, defaultN)
 	result, runErr := tea.NewProgram(m,
 		tea.WithOutput(os.Stderr),
 		tea.WithContext(context.Background()),
 		tea.WithReportFocus(),
 	).Run()
 	if runErr != nil {
-		return "", -1, false, false, fmt.Errorf("scan scope: %w", runErr)
+		return 0, false, fmt.Errorf("history scope: %w", runErr)
 	}
-	fm := result.(*scanScopeModel)
-	return fm.historyMode, fm.maxLimit, fm.maxSave, fm.aborted, nil
+	fm := result.(*historyScopeModel)
+	return fm.Limit, fm.Aborted, nil
 }
 
-func joinCommands(entries []history.Entry) string {
-	cmds := make([]string, len(entries))
-	for i, e := range entries {
-		cmds[i] = e.Command
-	}
-	return strings.Join(cmds, "\n") + "\n"
+// noFilterKeyMap returns a keymap with the "/" filter key disabled, for
+// short selects where search is unnecessary and the keypress would be confusing.
+func noFilterKeyMap() *huh.KeyMap {
+	km := huh.NewDefaultKeyMap()
+	km.Select.Filter.SetEnabled(false)
+	return km
 }
 
 func cyberTheme() *huh.Theme {
 	t := huh.ThemeBase()
-	t.Focused.Title = t.Focused.Title.Foreground(neonCyan)
+	t.Focused.Title = t.Focused.Title.Foreground(brightWhite)
 	t.Focused.SelectSelector = lipgloss.NewStyle().Foreground(claudeOrange).SetString("▶ ")
-	t.Focused.SelectedOption = lipgloss.NewStyle().Foreground(matrixGreen)
+	t.Focused.SelectedOption = lipgloss.NewStyle().Foreground(neonCyan)
 	t.Focused.TextInput.Prompt = lipgloss.NewStyle().Foreground(claudeOrange).SetString("> ")
-	t.Focused.TextInput.Cursor = lipgloss.NewStyle().Foreground(matrixGreen)
-	t.Focused.FocusedButton = lipgloss.NewStyle().Background(matrixGreen).Foreground(darkGray).Padding(0, 1)
+	t.Focused.TextInput.Cursor = lipgloss.NewStyle().Foreground(neonCyan)
+	t.Focused.FocusedButton = lipgloss.NewStyle().Background(neonCyan).Foreground(darkGray).Padding(0, 1)
 	t.Focused.BlurredButton = lipgloss.NewStyle().Foreground(lightGray).Padding(0, 1)
 	return t
 }
