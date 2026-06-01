@@ -1,5 +1,7 @@
 package llm
 
+import "strings"
+
 // ModelOption is a selectable model with a human-readable label.
 type ModelOption struct {
 	ID    string
@@ -19,6 +21,21 @@ var SupportedProviders = []ProviderOption{
 	{ID: "openai", Label: "OpenAI (GPT-4o)"},
 	{ID: "groq", Label: "Groq (Llama, Mixtral)"},
 	{ID: "ollama", Label: "Ollama (local, no API key)"},
+}
+
+// FriendlyModelName returns a short human-readable model name (e.g. "Haiku 4.5")
+// without tier/speed suffixes. Falls back to the raw model ID if not found.
+func FriendlyModelName(provider, model string) string {
+	for _, opt := range ModelsForProvider(provider) {
+		if opt.ID == model {
+			label := opt.Label
+			if i := strings.Index(label, " —"); i >= 0 {
+				return label[:i]
+			}
+			return label
+		}
+	}
+	return model
 }
 
 // ModelsForProvider returns the supported models for the given provider,
