@@ -120,15 +120,8 @@ func resolveInitShell(shellOverride string) (shell, rcFile string, err error) {
 	if shellOverride != "" {
 		shell = strings.ToLower(shellOverride)
 	} else {
-		shellEnv := os.Getenv("SHELL")
-		switch {
-		case strings.Contains(shellEnv, "zsh"):
-			shell = "zsh"
-		case strings.Contains(shellEnv, "bash"):
-			shell = "bash"
-		case strings.Contains(shellEnv, "fish"):
-			shell = "fish"
-		default:
+		shell = detectCurrentShell()
+		if shell == "" {
 			// Fallback: check which rc file exists.
 			if _, err := os.Stat(filepath.Join(home, ".zshrc")); err == nil {
 				shell = "zsh"
