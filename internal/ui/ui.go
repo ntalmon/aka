@@ -115,9 +115,10 @@ func PrintCensorDiff(original, censored []history.Entry) {
 // means the user aborted.
 func ReviewCensored(original, censored []history.Entry, withBack bool) (entries []history.Entry, back bool, err error) {
 	const (
-		optSend  = "send"
-		optEdit  = "edit"
-		optAbort = "abort"
+		optSend    = "send"
+		optEdit    = "edit"
+		optSendRaw = "send_raw"
+		optAbort   = "abort"
 	)
 	anyCensored := false
 	for i := range censored {
@@ -131,6 +132,7 @@ func ReviewCensored(original, censored []history.Entry, withBack bool) (entries 
 	}
 	if anyCensored {
 		opts = append(opts, huh.NewOption("Edit censored commands manually first", optEdit))
+		opts = append(opts, huh.NewOption("Send without censoring (not recommended)", optSendRaw))
 	}
 	opts = append(opts, huh.NewOption("No, abort", optAbort))
 	choice, wentBack, err := runSelectWithBack(fmt.Sprintf("Send %d commands to the LLM?", len(censored)), "", opts, withBack)
@@ -146,6 +148,9 @@ func ReviewCensored(original, censored []history.Entry, withBack bool) (entries 
 	case optEdit:
 		edited, eerr := editEntriesInEditor(censored)
 		return edited, false, eerr
+	case optSendRaw:
+		PrintWarning("No censoring — raw commands sent to LLM. May include secrets or API keys.")
+		return original, false, nil
 	default:
 		return censored, false, nil
 	}
@@ -373,24 +378,33 @@ type indexedSugg struct {
 	s   llm.Suggestion
 }
 
-// PrintSuggestionsOverview prints the grouped "✨ AKA FOUND N UPGRADES" summary
+// PrintSuggestionsOverview prints the grouped "✨ AKA FOUND N SUGGESTIONS" summary
 // before the interactive per-suggestion review begins.
 func PrintSuggestionsOverview(suggestions []llm.Suggestion) {
 	n := len(suggestions)
-	label := "UPGRADES"
+	label := "SUGGESTIONS"
 	if n == 1 {
-		label = "UPGRADE"
+		label = "SUGGESTION"
 	}
 	fmt.Println(nameStyle.Render(fmt.Sprintf("✨ AKA FOUND %d %s", n, label)))
 	fmt.Println(mutedStyle.Render(strings.Repeat("─", 32)))
 
 	var workflows, oneliners []indexedSugg
-	for i, s := range suggestions {
-		if s.Kind == "function" {
-			workflows = append(workflows, indexedSugg{i + 1, s})
+	for _, s := range suggestions {
+		if s.Kind == "function" && len(splitTemplate(s.Template)) > 1 {
+			workflows = append(workflows, indexedSugg{0, s})
 		} else {
-			oneliners = append(oneliners, indexedSugg{i + 1, s})
+			oneliners = append(oneliners, indexedSugg{0, s})
 		}
+	}
+	displayIdx := 1
+	for i := range workflows {
+		workflows[i].idx = displayIdx
+		displayIdx++
+	}
+	for i := range oneliners {
+		oneliners[i].idx = displayIdx
+		displayIdx++
 	}
 
 	if len(workflows) > 0 {
