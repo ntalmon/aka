@@ -37,7 +37,6 @@ var (
 	successStyle       = lipgloss.NewStyle().Bold(true).Foreground(neonCyan)
 	aliasCodeStyle     = lipgloss.NewStyle().Foreground(neonCyan).Bold(true).Background(darkGray).Padding(0, 1)
 	aliasLabelStyle    = lipgloss.NewStyle().Foreground(neonCyan)
-	templateStyle      = lipgloss.NewStyle().Foreground(lightGray)
 	overviewIndexStyle = lipgloss.NewStyle().Bold(true).Foreground(claudeOrange)
 	sectionStyle       = lipgloss.NewStyle().Bold(true).Foreground(neonCyan)
 	nameStyle          = lipgloss.NewStyle().Bold(true).Foreground(brightWhite)
@@ -979,7 +978,7 @@ func newHistoryScopeModel(totalCount, diffCount, defaultN int) *historyScopeMode
 	ti.CharLimit = 8
 	ti.Prompt = ""
 	ti.TextStyle = lipgloss.NewStyle().Foreground(neonCyan)
-	ti.CursorStyle = lipgloss.NewStyle().Foreground(claudeOrange)
+	ti.Cursor.Style = lipgloss.NewStyle().Foreground(claudeOrange)
 
 	opts := []histScopeOptKind{histOptKindFull}
 	if diffCount > 40 && diffCount < totalCount {

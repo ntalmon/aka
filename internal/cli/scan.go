@@ -192,10 +192,10 @@ func runScan(cmd *cobra.Command, _ []string) error {
 				fmt.Println("Aborted.")
 				return nil
 			}
-			switch {
-			case limit == 0: // full history
+			switch limit {
+			case 0: // full history
 				selectedEntries = rawEntries
-			case limit == -1: // diff
+			case -1: // diff
 				selectedEntries = diffEntries
 			default: // last N
 				if limit >= totalRaw {
