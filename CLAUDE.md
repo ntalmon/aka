@@ -60,11 +60,13 @@ Global (not per-shell):
 
 **Legacy migration**: `migrateFromLegacy()` in `aliases.go` transparently moves data from the old flat `~/.config/aka/` layout to `~/.config/aka/<shell>/` on first use.
 
-`max_history` (default 500) caps how many normalized entries are sent to the LLM. When the normalized count exceeds the limit, the scan-scope prompt (`ui.PromptScanScope`) lets the user continue with the current limit, send all entries for this run, or change the limit permanently (saved back to `config.toml`). The chosen limit is only persisted once the flow commits (after censor review) — aborting or backing out leaves `config.toml` untouched.
+`max_history` (default 500) in `config.toml` serves as the default value for the interactive "send last N" option during `aka scan`. It is no longer used as a hard cap; the user always explicitly controls how many commands to send.
 
-History cursor behavior: `minNewEntries` (100) is the threshold below which the history-scope prompt is shown instead of auto-sending the diff. Within that prompt, the "scan new commands only" option is shown only when `newCount >= 50` — below 50 the user can only choose full history or abort.
+**`--history` flag**: `aka scan --history <value>` skips the interactive prompt. Value can be a positive integer (last N commands), `"diff"` (commands since the last cursor), or `"full"` (entire history). `minDiffCount` (40) is the minimum diff size for `--history diff` to proceed.
 
-**Scan flow / back navigation**: the interactive scan flow is scope (history range → max-history limit) → censor review. The two scope prompts run as a **single bubbletea program** (`ui.PromptScanScope` / `scanScopeModel`) so back navigation between them happens **in-place**; `runScan` passes a `countForMode` callback so the model can recompute the normalized count (to decide whether the max prompt applies) without `ui` importing `normalize`. Back is via the left arrow / `← back` footer, shown on both scope select steps: the max step returns to the history step, and on the first interactive prompt `←` backs out of the command entirely (sets `aborted`). The censor review (`ui.ReviewCensored`) is a separate step; pressing back there returns `back=true` and `runScan` re-runs the scope program — there's a censor diff dump in between, so a fresh re-render there is expected, not a visual double-menu. `ReviewCensored`'s back arrow is shown only when a scope prompt preceded it (`backAvail`), otherwise re-running the empty scope program would loop.
+**`--censor` flag**: controls whether the censor pass runs and whether the user reviews it. Values: `"manual"` (default — interactive review shown), `"trust"` (censor runs, review skipped), `"none"` (no censoring — raw commands sent to LLM, with a printed warning). The history cursor is always saved after a successful scan regardless of censor mode.
+
+**Scan flow / back navigation**: the interactive scan flow is a **single-screen** history scope picker → censor review. The scope picker (`ui.PromptHistoryScope` / `historyScopeModel`) shows all options at once: full history, diff (only when diff > 40 commands), last N commands (customizable via an inline input step), and abort. The select and its follow-on number input run inside one bubbletea program so transitions are in-place. ← on the select step aborts the scan; the number input uses empty submit to go back to the select. The censor review (`ui.ReviewCensored`) is a separate step; pressing back there returns `back=true` and `runScan` re-runs the scope program — there's a censor diff dump in between, so a fresh re-render is expected, not a visual double-menu. `ReviewCensored`'s back arrow is shown only when interactive mode was used.
 
 ### History entries (`internal/history/`)
 
@@ -82,6 +84,8 @@ Two sequential passes:
 
 Both passes are deterministic: candidates are sorted before assigning indices.
 
+`censor.Summarize(redactionMap)` converts the placeholder→original map returned by `CensorSecrets` into a human-readable string like `"Masked 2 tokens, 1 IP address."` (or `"No sensitive data detected."` when empty). Used by the scan UX to print a brief censor summary.
+
 ### LLM integration (`internal/llm/`)
 
 Two providers implement the `llm.Provider` interface (`Suggest(ctx, []history.Entry) ([]Suggestion, error)`):
@@ -97,7 +101,7 @@ Both share the same system prompt (defined in `anthropic.go` as `systemPromptTex
 
 The system prompt distinguishes two suggestion types: **Type A — workflow functions** (3–5 sequential commands combined into one function; at least 2 required per run) and **Type B — one-liners** (short aliases for long single commands). Type A suggestions are always listed first. Pass-through wrappers that merely rename a command without saving keystrokes are explicitly banned. The `description` field in `param` objects is optional in the tool schema (Groq's LLM sometimes omits it).
 
-The `--history N` flag overrides `max_history` for one run and prints a note in the output to distinguish it from a normal run.
+The `--history` flag accepts a number, `"diff"`, or `"full"` to skip the interactive scope picker.
 
 Supported providers and their model lists live in `internal/llm/models.go` (`SupportedProviders`, `ModelsForProvider`). Add new providers there and implement the `Provider` interface.
 
