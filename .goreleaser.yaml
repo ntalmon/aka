@@ -37,16 +37,14 @@ checksum:
 
 signs:
   - cmd: cosign
+    signature: "${artifact}.sigstore.json"
     artifacts: checksum
     output: true
     args:
       - sign-blob
       - "--yes"
-      - "--output-signature=${signature}"
-      - "--output-certificate=${certificate}"
+      - "--bundle=${signature}"
       - "${artifact}"
-    env:
-      - COSIGN_EXPERIMENTAL=1
 
 changelog:
   sort: asc
