@@ -41,7 +41,6 @@ Get started:
 	root.CompletionOptions.DisableDefaultCmd = true
 
 	root.AddCommand(cli.NewInitCmd())
-	root.AddCommand(cli.NewUninitCmd())
 	root.AddCommand(cli.NewScanCmd())
 	root.AddCommand(cli.NewListCmd())
 	root.AddCommand(cli.NewDeleteCmd())
