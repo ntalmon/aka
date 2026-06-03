@@ -26,11 +26,11 @@ func NewConfigCmd() *cobra.Command {
 func newSetKeyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set-key",
-		Short: "Store an API key in the OS keyring",
-		Long:  "Store an API key in the OS keyring. Use --provider to specify which provider (anthropic or groq).",
+		Short: "Set an API key in ~/.config/aka/config.toml",
+		Long:  "Set an API key in ~/.config/aka/config.toml. Use --provider to specify which provider (anthropic, groq, openai, or gemini).",
 		RunE:  runSetKey,
 	}
-	cmd.Flags().String("provider", "", "Provider to set the key for: anthropic or groq (default: uses configured provider)")
+	cmd.Flags().String("provider", "", "Provider to set the key for: anthropic, groq, openai, or gemini (default: uses configured provider)")
 	return cmd
 }
 
@@ -42,8 +42,9 @@ func runSetKey(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	if providerFlag != "" && providerFlag != "anthropic" && providerFlag != "groq" {
-		return fmt.Errorf("unknown provider %q — must be anthropic or groq", providerFlag)
+	validProviders := map[string]bool{"anthropic": true, "groq": true, "openai": true, "gemini": true}
+	if providerFlag != "" && !validProviders[providerFlag] {
+		return fmt.Errorf("unknown provider %q — must be anthropic, groq, openai, or gemini", providerFlag)
 	}
 
 	const (
@@ -98,9 +99,14 @@ func runSetKey(cmd *cobra.Command, _ []string) error {
 			}
 			cfg.Provider = provider
 			cfg.Model = model
-			if provider == "groq" {
+			switch provider {
+			case "groq":
 				cfg.GroqAPIKey = key
-			} else {
+			case "openai":
+				cfg.OpenAIAPIKey = key
+			case "gemini":
+				cfg.GeminiAPIKey = key
+			default:
 				cfg.AnthropicAPIKey = key
 			}
 			if serr := config.Save(cfg); serr != nil {
@@ -148,7 +154,7 @@ func newSetMaxHistoryCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "set-max-history <count>",
 		Short: "Set the max_history limit",
-		Long:  "Set max_history, the maximum number of normalized shell history entries sent to the LLM during aka scan.",
+		Long:  "Set max_history, the default number of recent history entries pre-filled in the interactive history scope picker during aka scan.",
 		Args:  cobra.ExactArgs(1),
 		RunE:  runSetMaxHistory,
 	}
@@ -193,15 +199,15 @@ func runShowConfig(_ *cobra.Command, _ []string) error {
 	fmt.Printf("  model:          %s\n", cfg.Model)
 	fmt.Printf("  max_history:    %d\n", cfg.MaxHistory)
 
-	if cfg.AnthropicAPIKey != "" {
-		fmt.Println("  anthropic_key:  [configured]")
-	} else {
-		fmt.Println("  anthropic_key:  [not set — run `aka config set-key --provider anthropic`]")
+	keyStatus := func(key, provider string) string {
+		if key != "" {
+			return "[configured]"
+		}
+		return fmt.Sprintf("[not set — run `aka config set-key --provider %s`]", provider)
 	}
-	if cfg.GroqAPIKey != "" {
-		fmt.Println("  groq_key:       [configured]")
-	} else {
-		fmt.Println("  groq_key:       [not set — run `aka config set-key --provider groq`]")
-	}
+	fmt.Printf("  anthropic_key:  %s\n", keyStatus(cfg.AnthropicAPIKey, "anthropic"))
+	fmt.Printf("  groq_key:       %s\n", keyStatus(cfg.GroqAPIKey, "groq"))
+	fmt.Printf("  openai_key:     %s\n", keyStatus(cfg.OpenAIAPIKey, "openai"))
+	fmt.Printf("  gemini_key:     %s\n", keyStatus(cfg.GeminiAPIKey, "gemini"))
 	return nil
 }

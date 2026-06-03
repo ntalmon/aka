@@ -31,6 +31,7 @@ and uses an LLM to suggest useful shell aliases and functions.
 Get started:
   aka init          # one-time setup
   aka scan          # scan history and get suggestions
+  aka config        # manage provider, model, and API key
   aka list          # see installed aliases
   aka delete <name> # remove an alias or function`,
 		Version: version,
@@ -42,9 +43,9 @@ Get started:
 
 	root.AddCommand(cli.NewInitCmd())
 	root.AddCommand(cli.NewScanCmd())
+	root.AddCommand(cli.NewConfigCmd())
 	root.AddCommand(cli.NewListCmd())
 	root.AddCommand(cli.NewDeleteCmd())
-	root.AddCommand(cli.NewConfigCmd())
 
 	return root
 }
