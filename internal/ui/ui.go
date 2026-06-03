@@ -200,26 +200,6 @@ func editEntriesInEditor(entries []history.Entry) ([]history.Entry, error) {
 	return result, nil
 }
 
-// reviewDecision records what the user decided for one suggestion.
-type reviewDecision struct {
-	accepted bool
-	name     string // effective alias name (original or edited)
-}
-
-// reviewFlowModel runs the entire suggestion review as a single bubbletea
-// program so navigating between suggestions happens in-place.
-type reviewFlowModel struct {
-	suggestions []llm.Suggestion
-	decisions   []reviewDecision
-	current     int
-	editingName bool
-	choice      string
-	newName     string
-	active      *huh.Form
-	termWidth   int
-	aborted     bool
-}
-
 // splitTemplate splits a shell template into individual command lines by && and newlines.
 func splitTemplate(tmpl string) []string {
 	s := strings.ReplaceAll(tmpl, "&&", "\n")
@@ -237,80 +217,55 @@ func splitTemplate(tmpl string) []string {
 	return lines
 }
 
-func (m *reviewFlowModel) suggestionView() string {
-	s := m.suggestions[m.current]
-	boxW := m.termWidth - 4
-	if boxW < 40 {
-		boxW = 40
+// reviewState enumerates the active screen within the suggestion review flow.
+type reviewState int
+
+const (
+	reviewStateList   reviewState = iota // navigable list of all suggestions
+	reviewStateDetail                    // per-suggestion sub-menu (toggle/edit/back)
+	reviewStateEdit                      // inline name editor
+)
+
+// reviewListModel is the bubbletea model for the suggestion review screen.
+// All interactions run inside a single program so transitions are in-place.
+type reviewListModel struct {
+	suggestions  []llm.Suggestion
+	selected     []bool
+	names        []string
+	cursor       int // 0..len(suggestions); len(suggestions) == "Apply & exit" row
+	state        reviewState
+	detailCursor int // cursor within the detail sub-menu (0=toggle, 1=edit, 2=back)
+	editInput    textinput.Model
+	termWidth    int
+	Aborted      bool
+	Done         bool
+}
+
+func newReviewListModel(suggestions []llm.Suggestion) *reviewListModel {
+	names := make([]string, len(suggestions))
+	for i, s := range suggestions {
+		names[i] = s.Name
 	}
-	bs := suggestionBoxStyle.Width(boxW)
-
-	header := overviewIndexStyle.Render(fmt.Sprintf("❯ [%d/%d]", m.current+1, len(m.suggestions))) +
-		" " + nameStyle.Render(sanitizeForDisplay(s.Name))
-
-	cmdLines := splitTemplate(sanitizeForDisplay(s.Template))
-	parts := []string{header}
-	for _, c := range cmdLines {
-		parts = append(parts, commandLineStyle.Render("  │ "+c))
+	return &reviewListModel{
+		suggestions: suggestions,
+		selected:    make([]bool, len(suggestions)),
+		names:       names,
 	}
-	parts = append(parts, aliasLabelStyle.Render("↳ runs as:")+"  "+
-		aliasCodeStyle.Render(sanitizeForDisplay(buildInvocation(s))))
+}
 
-	if s.Rationale != "" {
-		r := sanitizeForDisplay(s.Rationale)
-		if idx := strings.IndexAny(r, ".!?"); idx >= 0 && idx < len(r)-1 {
-			r = r[:idx+1]
+func (m *reviewListModel) selectedCount() int {
+	n := 0
+	for _, s := range m.selected {
+		if s {
+			n++
 		}
-		if len(r) > 120 {
-			r = r[:117] + "..."
-		}
-		parts = append(parts, mutedStyle.Render(r))
 	}
-	return bs.Render(lipgloss.JoinVertical(lipgloss.Left, parts...)) + "\n"
+	return n
 }
 
-func (m *reviewFlowModel) toReview() tea.Cmd {
-	m.editingName = false
-	m.choice = ""
-	opts := []huh.Option[string]{
-		huh.NewOption("Accept", "accept"),
-		huh.NewOption(fmt.Sprintf("Edit name  (current: %s)", sanitizeForDisplay(m.suggestions[m.current].Name)), "edit"),
-		huh.NewOption("Skip", "skip"),
-	}
-	m.active = newBackableSelect("Accept this suggestion?", opts, &m.choice).WithKeyMap(noFilterKeyMap())
-	m.active.CancelCmd = tea.Quit
-	return m.active.Init()
-}
+func (m *reviewListModel) isOnApply() bool { return m.cursor == len(m.suggestions) }
 
-func (m *reviewFlowModel) toEdit() tea.Cmd {
-	m.editingName = true
-	m.newName = ""
-	// A text input: left/right move the cursor, so back is via empty submit.
-	m.active = huh.NewForm(huh.NewGroup(
-		huh.NewInput().
-			Title(fmt.Sprintf("New alias name (current: %s):", sanitizeForDisplay(m.suggestions[m.current].Name))).
-			Description("Leave empty to go back.").
-			Value(&m.newName),
-	)).WithTheme(cyberTheme())
-	m.active.CancelCmd = tea.Quit
-	return m.active.Init()
-}
-
-func (m *reviewFlowModel) advance() tea.Cmd {
-	m.current++
-	if m.current >= len(m.suggestions) {
-		return tea.Quit
-	}
-	return m.toReview()
-}
-
-func (m *reviewFlowModel) goBack() tea.Cmd {
-	m.current--
-	m.decisions[m.current] = reviewDecision{} // clear previous decision
-	return m.toReview()
-}
-
-func (m *reviewFlowModel) Init() tea.Cmd {
+func (m *reviewListModel) Init() tea.Cmd {
 	tw, _, err := term.GetSize(uintptr(os.Stdout.Fd()))
 	if err != nil || tw < 40 {
 		tw = 80
@@ -319,57 +274,275 @@ func (m *reviewFlowModel) Init() tea.Cmd {
 		tw = 100
 	}
 	m.termWidth = tw
-	return m.toReview()
+	return nil
 }
 
-func (m *reviewFlowModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// On the select screen, ← goes back to the previous suggestion. In the edit
-	// text input, ← is left to move the cursor (back there is via empty submit).
-	if !m.editingName && m.current > 0 {
-		if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyLeft {
-			return m, m.goBack()
-		}
+func (m *reviewListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch m.state {
+	case reviewStateList:
+		return m.updateList(msg)
+	case reviewStateDetail:
+		return m.updateDetail(msg)
+	case reviewStateEdit:
+		return m.updateEdit(msg)
 	}
-	updated, cmd := m.active.Update(msg)
-	if f, ok := updated.(*huh.Form); ok {
-		m.active = f
-	}
-	switch m.active.State {
-	case huh.StateAborted:
-		m.aborted = true
-		return m, tea.Quit
-	case huh.StateCompleted:
-		if m.editingName {
-			name := strings.TrimSpace(m.newName)
-			if name == "" {
-				return m, m.toReview() // empty = go back to the select
+	return m, nil
+}
+
+func (m *reviewListModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.Type {
+		case tea.KeyCtrlC, tea.KeyEsc:
+			m.Aborted = true
+			return m, tea.Quit
+		case tea.KeyUp:
+			if m.cursor > 0 {
+				m.cursor--
 			}
-			m.decisions[m.current] = reviewDecision{accepted: true, name: name}
-			return m, m.advance()
-		}
-		switch m.choice {
-		case "accept":
-			m.decisions[m.current] = reviewDecision{accepted: true, name: m.suggestions[m.current].Name}
-			return m, m.advance()
-		case "edit":
-			return m, m.toEdit()
-		default: // skip
-			m.decisions[m.current] = reviewDecision{accepted: false}
-			return m, m.advance()
+		case tea.KeyDown:
+			if m.cursor < len(m.suggestions) {
+				m.cursor++
+			}
+		case tea.KeyEnter:
+			if m.isOnApply() {
+				m.Done = true
+				return m, tea.Quit
+			}
+			m.state = reviewStateDetail
+			m.detailCursor = 0
 		}
 	}
+	return m, nil
+}
+
+func (m *reviewListModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.Type {
+		case tea.KeyCtrlC, tea.KeyEsc:
+			m.Aborted = true
+			return m, tea.Quit
+		case tea.KeyLeft:
+			m.state = reviewStateList
+		case tea.KeyUp:
+			if m.detailCursor > 0 {
+				m.detailCursor--
+			}
+		case tea.KeyDown:
+			if m.detailCursor < 3 {
+				m.detailCursor++
+			}
+		case tea.KeySpace:
+			if m.detailCursor == 0 {
+				m.selected[m.cursor] = !m.selected[m.cursor]
+			}
+		case tea.KeyEnter:
+			switch m.detailCursor {
+			case 0: // toggle — Enter also works here
+				m.selected[m.cursor] = !m.selected[m.cursor]
+			case 1: // edit name
+				ti := textinput.New()
+				ti.SetValue(m.names[m.cursor])
+				ti.Width = 30
+				ti.CharLimit = 100
+				ti.Prompt = ""
+				ti.TextStyle = lipgloss.NewStyle().Foreground(neonCyan)
+				ti.Cursor.Style = lipgloss.NewStyle().Foreground(claudeOrange)
+				m.editInput = ti
+				m.state = reviewStateEdit
+				return m, m.editInput.Focus()
+			case 2: // apply & exit
+				m.Done = true
+				return m, tea.Quit
+			case 3: // back
+				m.state = reviewStateList
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m *reviewListModel) updateEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.Type {
+		case tea.KeyCtrlC:
+			m.Aborted = true
+			return m, tea.Quit
+		case tea.KeyEsc:
+			m.state = reviewStateDetail
+			return m, nil
+		case tea.KeyEnter:
+			if name := strings.TrimSpace(m.editInput.Value()); name != "" {
+				m.names[m.cursor] = name
+			}
+			m.state = reviewStateDetail
+			return m, nil
+		}
+	}
+	var cmd tea.Cmd
+	m.editInput, cmd = m.editInput.Update(msg)
 	return m, cmd
 }
 
-func (m *reviewFlowModel) View() string {
-	if m.active == nil {
-		return ""
+func (m *reviewListModel) View() string {
+	switch m.state {
+	case reviewStateList:
+		return m.viewList()
+	case reviewStateDetail:
+		return m.viewDetail()
+	case reviewStateEdit:
+		return m.viewEdit()
 	}
-	if m.editingName {
-		return m.active.View()
+	return ""
+}
+
+func (m *reviewListModel) renderListRows(activeCursor int) string {
+	var sb strings.Builder
+	for i := range m.suggestions {
+		onRow := i == activeCursor
+		check := "[ ]"
+		checkSty := mutedStyle
+		if m.selected[i] {
+			check = "[✓]"
+			checkSty = addStyle
+		}
+		selector := "  "
+		if onRow {
+			selector = lipgloss.NewStyle().Foreground(claudeOrange).Render("▶ ")
+		}
+		name := sanitizeForDisplay(m.names[i])
+		var nameLabel string
+		if onRow {
+			nameLabel = lipgloss.NewStyle().Foreground(neonCyan).Render(name)
+		} else {
+			nameLabel = mutedStyle.Render(name)
+		}
+		fmt.Fprintf(&sb, "%s%s %s\n", selector, checkSty.Render(check), nameLabel)
 	}
-	// Back to the previous suggestion is available from the second one onward.
-	return m.suggestionView() + m.active.View() + footerWithBack(m.active, m.current > 0)
+	return sb.String()
+}
+
+func (m *reviewListModel) renderApplyRow(isActive bool) string {
+	n := m.selectedCount()
+	label := fmt.Sprintf("→  Apply %d suggestion(s) & exit", n)
+	if isActive {
+		return lipgloss.NewStyle().Foreground(claudeOrange).Render("▶ ") +
+			lipgloss.NewStyle().Foreground(neonCyan).Bold(true).Render(label) + "\n"
+	}
+	return "  " + nameStyle.Render(label) + "\n"
+}
+
+func (m *reviewListModel) viewList() string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(nameStyle.Render("Review suggestions:"))
+	sb.WriteString("\n\n")
+	sb.WriteString(m.renderListRows(m.cursor))
+	sb.WriteString("  " + mutedStyle.Render(strings.Repeat("─", 28)) + "\n")
+	sb.WriteString(m.renderApplyRow(m.isOnApply()))
+	if !m.isOnApply() {
+		sb.WriteString("\n")
+		sb.WriteString(m.suggestionDetail(m.cursor))
+	}
+	sb.WriteString("\n")
+	sb.WriteString(mutedStyle.Render("↑↓ navigate  •  enter open  •  esc abort"))
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+func (m *reviewListModel) viewDetail() string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(nameStyle.Render("Review suggestions:"))
+	sb.WriteString("\n\n")
+	sb.WriteString(m.renderListRows(m.cursor))
+	sb.WriteString("  " + mutedStyle.Render(strings.Repeat("─", 28)) + "\n")
+	sb.WriteString(m.renderApplyRow(false))
+	sb.WriteString("\n")
+	sb.WriteString(m.suggestionDetail(m.cursor))
+	sb.WriteString("\n")
+
+	toggleLabel := "[ ] Press space to add suggestion"
+	if m.selected[m.cursor] {
+		toggleLabel = "[✓] Press space to remove suggestion"
+	}
+	detailOpts := []string{
+		toggleLabel,
+		fmt.Sprintf("Edit name  (current: %s)", sanitizeForDisplay(m.names[m.cursor])),
+		fmt.Sprintf("Apply %d suggestion(s) & exit", m.selectedCount()),
+		"Back",
+	}
+	for i, opt := range detailOpts {
+		active := i == m.detailCursor
+		selector := "  "
+		if active {
+			selector = lipgloss.NewStyle().Foreground(claudeOrange).Render("▶ ")
+		}
+		var label string
+		switch {
+		case active && i == 0 && m.selected[m.cursor]:
+			label = addStyle.Render(opt)
+		case active:
+			label = lipgloss.NewStyle().Foreground(neonCyan).Render(opt)
+		case i == 0 && m.selected[m.cursor]:
+			label = addStyle.Render(opt)
+		default:
+			label = mutedStyle.Render(opt)
+		}
+		fmt.Fprintf(&sb, "%s%s\n", selector, label)
+	}
+	sb.WriteString("\n")
+	footer := "↑↓ navigate  •  enter confirm  •  ← back"
+	if m.detailCursor == 0 {
+		footer = "↑↓ navigate  •  space / enter toggle  •  ← back"
+	}
+	sb.WriteString(mutedStyle.Render(footer))
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+func (m *reviewListModel) viewEdit() string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(nameStyle.Render(fmt.Sprintf("Rename %s:", sanitizeForDisplay(m.suggestions[m.cursor].Name))))
+	sb.WriteString("\n\n")
+	fmt.Fprintf(&sb, "  %s %s\n",
+		lipgloss.NewStyle().Foreground(claudeOrange).Render(">"),
+		m.editInput.View(),
+	)
+	sb.WriteString("\n")
+	sb.WriteString(mutedStyle.Render("enter confirm  •  esc cancel"))
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+func (m *reviewListModel) suggestionDetail(idx int) string {
+	s := m.suggestions[idx]
+	boxW := m.termWidth - 4
+	if boxW < 40 {
+		boxW = 40
+	}
+	bs := suggestionBoxStyle.Width(boxW)
+	header := nameStyle.Render(sanitizeForDisplay(m.names[idx]))
+	cmdLines := splitTemplate(sanitizeForDisplay(s.Template))
+	parts := []string{header}
+	for _, c := range cmdLines {
+		parts = append(parts, commandLineStyle.Render("  │ "+c))
+	}
+	invS := s
+	invS.Name = m.names[idx]
+	parts = append(parts, aliasLabelStyle.Render("↳ runs as:")+"  "+
+		aliasCodeStyle.Render(sanitizeForDisplay(buildInvocation(invS))))
+	if s.Rationale != "" {
+		r := sanitizeForDisplay(s.Rationale)
+		if i := strings.IndexAny(r, ".!?"); i >= 0 && i < len(r)-1 {
+			r = r[:i+1]
+		}
+		if len(r) > 120 {
+			r = r[:117] + "..."
+		}
+		parts = append(parts, mutedStyle.Render(r))
+	}
+	return bs.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 }
 
 // indexedSugg pairs a display index with a suggestion for overview rendering.
@@ -451,18 +624,15 @@ func printOverviewEntry(idx int, s llm.Suggestion) {
 	}
 }
 
-// ReviewSuggestions presents suggestions one at a time with Accept/Edit/Skip/Back.
-// Navigating between suggestions happens in-place; ← also goes back.
+// ReviewSuggestions presents all suggestions in a navigable list. The user
+// toggles each suggestion on/off, edits names, and applies via "Apply & exit".
 // Returns the accepted suggestions.
 func ReviewSuggestions(suggestions []llm.Suggestion) ([]llm.Suggestion, error) {
 	if len(suggestions) == 0 {
 		fmt.Println(mutedStyle.Render("No suggestions returned by the LLM."))
 		return nil, nil
 	}
-	m := &reviewFlowModel{
-		suggestions: suggestions,
-		decisions:   make([]reviewDecision, len(suggestions)),
-	}
+	m := newReviewListModel(suggestions)
 	result, err := tea.NewProgram(m,
 		tea.WithOutput(os.Stderr),
 		tea.WithContext(context.Background()),
@@ -471,19 +641,17 @@ func ReviewSuggestions(suggestions []llm.Suggestion) ([]llm.Suggestion, error) {
 	if err != nil {
 		return nil, fmt.Errorf("review suggestions: %w", err)
 	}
-	flow := result.(*reviewFlowModel)
-	if flow.aborted {
+	flow := result.(*reviewListModel)
+	if flow.Aborted {
 		return nil, huh.ErrUserAborted
 	}
 	var accepted []llm.Suggestion
-	for i, d := range flow.decisions {
-		if d.accepted {
+	for i, sel := range flow.selected {
+		if sel {
 			s := suggestions[i]
-			s.Name = d.name
+			s.Name = flow.names[i]
 			accepted = append(accepted, s)
 			fmt.Println(successBarStyle.Render(fmt.Sprintf("✅ Alias %s accepted", sanitizeForDisplay(s.Name))))
-		} else if i < flow.current {
-			fmt.Println(mutedStyle.Render(fmt.Sprintf("   ✗ %s — skipped", sanitizeForDisplay(suggestions[i].Name))))
 		}
 	}
 	return accepted, nil
