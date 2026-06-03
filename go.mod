@@ -1,8 +1,6 @@
 module github.com/ntalmon/aka/aka-cli
 
-go 1.25
-
-toolchain go1.26.4
+go 1.26.4
 
 require (
 	github.com/charmbracelet/bubbles v0.21.1-0.20250623103423-23b8fd6302d7

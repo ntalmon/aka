@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
@@ -53,7 +54,7 @@ func runList(_ *cobra.Command, _ []string) error {
 		kindW     = 8
 		createdW  = 16
 		lastUsedW = 16
-		gaps      = 4 // one space between each of the five columns
+		gaps      = 10 // 3 spaces between name/kind/template, 2 between template/dates
 		minTmplW  = 15
 	)
 
@@ -77,13 +78,19 @@ func runList(_ *cobra.Command, _ []string) error {
 		templateW = minTmplW
 	}
 
-	// Styles.
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
-	nameStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	kindStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	templateStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	// Styles — same palette as the scan UI.
+	cyan := lipgloss.Color("#22D3EE")
+	orange := lipgloss.Color("#FF9900")
+	gray := lipgloss.Color("#A0A0A0")
 
-	header := fmt.Sprintf("%-*s %-*s %-*s %-*s %-*s",
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(orange)
+	nameStyle := lipgloss.NewStyle().Bold(true).Foreground(cyan)
+	kindStyle := lipgloss.NewStyle().Foreground(orange)
+	templateStyle := lipgloss.NewStyle().Foreground(gray)
+	mutedStyle := lipgloss.NewStyle().Foreground(gray)
+	countStyle := lipgloss.NewStyle().Foreground(cyan)
+
+	header := fmt.Sprintf("%-*s   %-*s   %-*s  %-*s  %-*s",
 		nameW, "NAME",
 		kindW, "KIND",
 		templateW, "TEMPLATE",
@@ -91,26 +98,23 @@ func runList(_ *cobra.Command, _ []string) error {
 		lastUsedW, "LAST USED",
 	)
 	fmt.Println(headerStyle.Render(header))
-	fmt.Println(strings.Repeat("─", nameW+kindW+templateW+createdW+lastUsedW+gaps))
+	fmt.Println(mutedStyle.Render(strings.Repeat("─", nameW+kindW+templateW+createdW+lastUsedW+gaps)))
 
 	for _, e := range entries {
 		lastUsed := "—"
 		if !e.LastUsedAt.IsZero() {
 			lastUsed = e.LastUsedAt.Format("2006-01-02 15:04")
 		}
-		tmpl := e.Template
-		if len(tmpl) > templateW {
-			tmpl = tmpl[:templateW-3] + "..."
-		}
-		fmt.Printf("%s %s %s %-*s %-*s\n",
+		tmpl := ansi.Truncate(e.Template, templateW, "...")
+		fmt.Printf("%s   %s   %s  %s  %s\n",
 			nameStyle.Render(fmt.Sprintf("%-*s", nameW, e.Name)),
 			kindStyle.Render(fmt.Sprintf("%-*s", kindW, e.Kind)),
 			templateStyle.Render(fmt.Sprintf("%-*s", templateW, tmpl)),
-			createdW, e.CreatedAt.Format("2006-01-02 15:04"),
-			lastUsedW, lastUsed,
+			mutedStyle.Render(fmt.Sprintf("%-*s", createdW, e.CreatedAt.Format("2006-01-02 15:04"))),
+			mutedStyle.Render(fmt.Sprintf("%-*s", lastUsedW, lastUsed)),
 		)
 	}
 
-	fmt.Printf("\n%d alias(es)/function(s) installed\n", len(entries))
+	fmt.Printf("\n%s\n", countStyle.Render(fmt.Sprintf("%d alias(es)/function(s) installed", len(entries))))
 	return nil
 }
