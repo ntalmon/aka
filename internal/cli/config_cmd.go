@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ntalmon/aka/aka-cli/internal/config"
-	"github.com/ntalmon/aka/aka-cli/internal/ui"
+	"github.com/ntalmon/aka/internal/config"
+	"github.com/ntalmon/aka/internal/ui"
 )
 
 // NewConfigCmd creates the `aka config` subcommand with sub-subcommands.

@@ -16,8 +16,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/term"
 
-	"github.com/ntalmon/aka/aka-cli/internal/history"
-	"github.com/ntalmon/aka/aka-cli/internal/llm"
+	"github.com/ntalmon/aka/internal/history"
+	"github.com/ntalmon/aka/internal/llm"
 )
 
 var (

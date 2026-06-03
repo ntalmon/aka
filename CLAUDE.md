@@ -23,7 +23,7 @@ After every Go file edit, run `gofmt -w <file>` to format and `go build ./cmd/ak
 
 ## Architecture
 
-The repo root is the Go module (`github.com/ntalmon/aka/aka-cli`).
+The repo root is the Go module (`github.com/ntalmon/aka`).
 
 ### Data flow for `aka scan`
 

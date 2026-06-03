@@ -1,4 +1,4 @@
-module github.com/ntalmon/aka/aka-cli
+module github.com/ntalmon/aka
 
 go 1.26.4
 

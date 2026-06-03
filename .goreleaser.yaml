@@ -61,7 +61,7 @@ changelog:
 release:
   github:
     owner: ntalmon
-    name: aka-cli
+    name: aka
   draft: false
   prerelease: auto
 
@@ -71,7 +71,7 @@ brews:
       owner: ntalmon
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: "https://github.com/ntalmon/aka-cli"
+    homepage: "https://github.com/ntalmon/aka"
     description: "Shell history analyzer and alias manager powered by AI"
     license: "MIT"
     install: |

@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -e
 
-REPO="ntalmon/aka-cli"
+REPO="ntalmon/aka"
 BINARY="aka"
 
 # Detect OS

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/ntalmon/aka/aka-cli/internal/history"
+	"github.com/ntalmon/aka/internal/history"
 )
 
 // ----------------------------------------------------------------------------

@@ -4,7 +4,7 @@ package normalize
 import (
 	"strings"
 
-	"github.com/ntalmon/aka/aka-cli/internal/history"
+	"github.com/ntalmon/aka/internal/history"
 )
 
 // Normalize trims whitespace and drops empty lines. Order and duplicates are preserved.

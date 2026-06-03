@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ntalmon/aka/aka-cli/internal/aliases"
-	"github.com/ntalmon/aka/aka-cli/internal/llm"
+	"github.com/ntalmon/aka/internal/aliases"
+	"github.com/ntalmon/aka/internal/llm"
 )
 
 // validNameRE matches shell-safe alias/function names (POSIX identifier + length cap).
