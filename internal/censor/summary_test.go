@@ -40,7 +40,7 @@ func TestSummarizeMultipleTokens(t *testing.T) {
 
 func TestSummarizeMixedCategories(t *testing.T) {
 	rm := map[string]string{
-		"<TOKEN_1>":   "sk-ant-abc",
+		"<TOKEN_1>":    "sk-ant-abc",
 		"<PASSWORD_1>": "hunter2",
 	}
 	got := Summarize(rm)
