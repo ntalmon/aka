@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ntalmon/aka/aka-cli/internal/history"
-	"github.com/ntalmon/aka/aka-cli/internal/suggest"
+	"github.com/ntalmon/aka/internal/history"
+	"github.com/ntalmon/aka/internal/suggest"
 )
 
 const (

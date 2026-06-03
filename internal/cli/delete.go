@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ntalmon/aka/aka-cli/internal/aliases"
-	"github.com/ntalmon/aka/aka-cli/internal/ui"
+	"github.com/ntalmon/aka/internal/aliases"
+	"github.com/ntalmon/aka/internal/ui"
 )
 
 // NewDeleteCmd creates the `aka delete` subcommand.

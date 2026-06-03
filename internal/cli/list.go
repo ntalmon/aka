@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
-	"github.com/ntalmon/aka/aka-cli/internal/aliases"
+	"github.com/ntalmon/aka/internal/aliases"
 )
 
 // NewListCmd creates the `aka list` subcommand.

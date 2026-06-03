@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ntalmon/aka/aka-cli/internal/aliases"
-	"github.com/ntalmon/aka/aka-cli/internal/llm"
+	"github.com/ntalmon/aka/internal/aliases"
+	"github.com/ntalmon/aka/internal/llm"
 )
 
 const testShell = "zsh"

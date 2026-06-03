@@ -4,8 +4,8 @@ package llm
 import (
 	"context"
 
-	"github.com/ntalmon/aka/aka-cli/internal/aliases"
-	"github.com/ntalmon/aka/aka-cli/internal/history"
+	"github.com/ntalmon/aka/internal/aliases"
+	"github.com/ntalmon/aka/internal/history"
 )
 
 // Suggestion is a single alias or shell function suggested by the LLM.

@@ -3,7 +3,7 @@ package cli
 import (
 	"testing"
 
-	"github.com/ntalmon/aka/aka-cli/internal/config"
+	"github.com/ntalmon/aka/internal/config"
 )
 
 func TestSetMaxHistoryCmdSavesConfig(t *testing.T) {

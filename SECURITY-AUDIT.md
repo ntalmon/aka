@@ -1,4 +1,4 @@
-# aka-cli Security Audit
+# aka Security Audit
 
 A repeatable security review tailored to this project's trust boundaries.
 Each section lists the threat model, the specific checks, and the concrete

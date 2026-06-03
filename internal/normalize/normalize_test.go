@@ -3,7 +3,7 @@ package normalize
 import (
 	"testing"
 
-	"github.com/ntalmon/aka/aka-cli/internal/history"
+	"github.com/ntalmon/aka/internal/history"
 )
 
 func TestNormalizeDropsEmptyAndWhitespace(t *testing.T) {

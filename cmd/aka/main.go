@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ntalmon/aka/aka-cli/internal/cli"
+	"github.com/ntalmon/aka/internal/cli"
 )
 
 // version is set via ldflags: -X main.version=v0.1.0

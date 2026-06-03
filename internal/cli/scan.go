@@ -10,14 +10,14 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
-	"github.com/ntalmon/aka/aka-cli/internal/aliases"
-	"github.com/ntalmon/aka/aka-cli/internal/apply"
-	"github.com/ntalmon/aka/aka-cli/internal/censor"
-	"github.com/ntalmon/aka/aka-cli/internal/config"
-	"github.com/ntalmon/aka/aka-cli/internal/history"
-	"github.com/ntalmon/aka/aka-cli/internal/llm"
-	"github.com/ntalmon/aka/aka-cli/internal/normalize"
-	"github.com/ntalmon/aka/aka-cli/internal/ui"
+	"github.com/ntalmon/aka/internal/aliases"
+	"github.com/ntalmon/aka/internal/apply"
+	"github.com/ntalmon/aka/internal/censor"
+	"github.com/ntalmon/aka/internal/config"
+	"github.com/ntalmon/aka/internal/history"
+	"github.com/ntalmon/aka/internal/llm"
+	"github.com/ntalmon/aka/internal/normalize"
+	"github.com/ntalmon/aka/internal/ui"
 )
 
 // censorModeFlag is a custom pflag.Value whose Type() returns "<mode>" so that

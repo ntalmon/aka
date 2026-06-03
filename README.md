@@ -11,10 +11,10 @@ brew install ntalmon/tap/aka
 
 **Go developers**
 ```sh
-go install github.com/ntalmon/aka/aka-cli/cmd/aka@latest
+go install github.com/ntalmon/aka/cmd/aka@latest
 ```
 
-**Manual** — download a pre-built binary from [Releases](https://github.com/ntalmon/aka-cli/releases).
+**Manual** — download a pre-built binary from [Releases](https://github.com/ntalmon/aka/releases).
 
 ## Quick start
 

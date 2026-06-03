@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ntalmon/aka/aka-cli/internal/history"
+	"github.com/ntalmon/aka/internal/history"
 )
 
 // BuildPrompt formats the censored entries as an LLM user message.
