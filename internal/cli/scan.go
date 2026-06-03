@@ -176,36 +176,31 @@ func runScan(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	// Interactive scope + censor loop. Back at censor review re-runs the scope prompt.
+	// Interactive scope + censor: run as a single in-place bubbletea program so
+	// back navigation from the censor step re-renders the scope picker in-place.
 	var censored []history.Entry
-	for {
-		if interactive {
-			defaultN := cfg.MaxHistory
-			if defaultN <= 0 {
-				defaultN = 500
-			}
-			limit, aborted, perr := ui.PromptHistoryScope(totalRaw, diffCount, defaultN)
-			if perr != nil {
-				return fmt.Errorf("history scope: %w", perr)
-			}
-			if aborted {
-				fmt.Println("Aborted.")
-				return nil
-			}
-			switch limit {
-			case 0: // full history
-				selectedEntries = rawEntries
-			case -1: // diff
-				selectedEntries = diffEntries
-			default: // last N
-				if limit >= totalRaw {
-					selectedEntries = rawEntries
-				} else {
-					selectedEntries = rawEntries[totalRaw-limit:]
-				}
-			}
+	if interactive && censorMode == "manual" {
+		defaultN := cfg.MaxHistory
+		if defaultN <= 0 {
+			defaultN = 500
 		}
-
+		computeFn := func(selected []history.Entry) ([]history.Entry, []history.Entry) {
+			norm := normalize.Normalize(selected)
+			cens, _ := censor.CensorAll(norm)
+			return norm, cens
+		}
+		toSend, scanAborted, perr := ui.PromptScanFlow(
+			rawEntries, diffEntries, totalRaw, diffCount, defaultN, computeFn,
+		)
+		if perr != nil {
+			return fmt.Errorf("scan flow: %w", perr)
+		}
+		if scanAborted {
+			fmt.Println("Aborted.")
+			return nil
+		}
+		censored = toSend
+	} else {
 		normalized := normalize.Normalize(selectedEntries)
 		if len(normalized) == 0 {
 			return fmt.Errorf("no commands found after normalization")
@@ -221,13 +216,11 @@ func runScan(cmd *cobra.Command, _ []string) error {
 		if censorMode != "manual" {
 			ui.PrintStep(fmt.Sprintf("Skipping review — sending %d commands directly", len(toSend)))
 		} else {
+			// non-interactive + manual censor: show review without back option
 			ui.PrintCensorDiff(normalized, toSend)
-			result, back, rerr := ui.ReviewCensored(normalized, toSend, interactive)
+			result, _, rerr := ui.ReviewCensored(normalized, toSend, false)
 			if rerr != nil {
 				return fmt.Errorf("censor review: %w", rerr)
-			}
-			if back {
-				continue // re-run the scope prompt
 			}
 			if result == nil {
 				fmt.Println("Aborted — no data sent.")
@@ -236,7 +229,6 @@ func runScan(cmd *cobra.Command, _ []string) error {
 			toSend = result
 		}
 		censored = toSend
-		break
 	}
 
 	// Call LLM.

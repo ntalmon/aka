@@ -76,11 +76,10 @@ func PrintStepLabeled(label, text string) {
 	fmt.Println(mutedStyle.Render("  └─ ") + headerStyle.Render(label) + " " + mutedStyle.Render(text))
 }
 
-// PrintCensorDiff prints a diff of commands modified by the censor pass.
-// Unchanged commands are omitted; changed ones show the original in red and
-// the censored replacement in green.
-func PrintCensorDiff(original, censored []history.Entry) {
-	const maxLines = 50 // each changed entry prints 2 lines
+// renderCensorDiff returns a colored diff string of commands modified by the censor pass.
+func renderCensorDiff(original, censored []history.Entry) string {
+	const maxLines = 50
+	var sb strings.Builder
 	lines := 0
 	changed := 0
 	for i, orig := range original {
@@ -90,22 +89,30 @@ func PrintCensorDiff(original, censored []history.Entry) {
 		if orig.Command != censored[i].Command {
 			changed++
 			if lines+2 <= maxLines {
-				fmt.Println(removeStyle.Render("- " + orig.Command))
-				fmt.Println(addStyle.Render("+ " + censored[i].Command))
+				sb.WriteString(removeStyle.Render("- "+orig.Command) + "\n")
+				sb.WriteString(addStyle.Render("+ "+censored[i].Command) + "\n")
 				lines += 2
 			}
 		}
 	}
 	if changed == 0 {
-		fmt.Println(lipgloss.NewStyle().Bold(true).Foreground(neonGreen).Render("  ✓ No sensitive data detected."))
+		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(neonGreen).Render("  ✓ No sensitive data detected.") + "\n")
 	} else {
 		shown := lines / 2
 		suffix := ""
 		if shown < changed {
 			suffix = fmt.Sprintf(" (%d more not shown)", changed-shown)
 		}
-		fmt.Println(mutedStyle.Render(fmt.Sprintf("  %d of %d command(s) modified by censor.%s", changed, len(original), suffix)))
+		sb.WriteString(mutedStyle.Render(fmt.Sprintf("  %d of %d command(s) modified by censor.%s", changed, len(original), suffix)) + "\n")
 	}
+	return sb.String()
+}
+
+// PrintCensorDiff prints a diff of commands modified by the censor pass.
+// Unchanged commands are omitted; changed ones show the original in red and
+// the censored replacement in green.
+func PrintCensorDiff(original, censored []history.Entry) {
+	fmt.Print(renderCensorDiff(original, censored))
 	fmt.Println()
 }
 
@@ -1151,6 +1158,7 @@ type historyScopeModel struct {
 
 	Limit   int
 	Aborted bool
+	Done    bool // set when a valid selection was made (not abort)
 }
 
 func newHistoryScopeModel(totalCount, diffCount, defaultN int) *historyScopeModel {
@@ -1184,14 +1192,17 @@ func (m *historyScopeModel) selectCurrent() (tea.Model, tea.Cmd) {
 	switch m.currentOpt() {
 	case histOptKindFull:
 		m.Limit = 0
+		m.Done = true
 	case histOptKindDiff:
 		m.Limit = -1
+		m.Done = true
 	case histOptKindCustom:
 		n, err := strconv.Atoi(strings.TrimSpace(m.input.Value()))
 		if err != nil || n <= 0 {
 			return m, nil // invalid number — keep waiting
 		}
 		m.Limit = n
+		m.Done = true
 	default: // abort
 		m.Aborted = true
 	}
@@ -1319,6 +1330,240 @@ func PromptHistoryScope(totalCount, diffCount, defaultN int) (limit int, aborted
 	}
 	fm := result.(*historyScopeModel)
 	return fm.Limit, fm.Aborted, nil
+}
+
+// scanFlowStep is the active step in the combined scope+censor flow.
+type scanFlowStep int
+
+const (
+	sfStepScope scanFlowStep = iota
+	sfStepCensor
+)
+
+// sfCensorOpt is one option in the censor review menu.
+type sfCensorOpt struct {
+	label string
+	val   string // "send", "edit", "send_raw", "abort"
+}
+
+// scanFlowModel drives the interactive scope picker → censor review flow as a
+// single bubbletea program so back navigation (← on the censor step) is in-place.
+type scanFlowModel struct {
+	rawEntries  []history.Entry
+	diffEntries []history.Entry
+	totalCount  int
+	diffCount   int
+	defaultN    int
+	computeFn   func([]history.Entry) (normalized, censored []history.Entry)
+
+	step     scanFlowStep
+	scopeMdl *historyScopeModel
+
+	normalized   []history.Entry
+	censored     []history.Entry
+	diffText     string
+	censorOpts   []sfCensorOpt
+	censorCursor int
+
+	Aborted      bool
+	WantsEdit    bool
+	WantsSendRaw bool
+	ToSend       []history.Entry
+	Err          error
+}
+
+func (m *scanFlowModel) Init() tea.Cmd {
+	m.scopeMdl = newHistoryScopeModel(m.totalCount, m.diffCount, m.defaultN)
+	return m.scopeMdl.Init()
+}
+
+func (m *scanFlowModel) transitionToCensor() tea.Cmd {
+	var selected []history.Entry
+	switch m.scopeMdl.Limit {
+	case 0:
+		selected = m.rawEntries
+	case -1:
+		selected = m.diffEntries
+	default:
+		lim := m.scopeMdl.Limit
+		if lim >= m.totalCount {
+			selected = m.rawEntries
+		} else {
+			selected = m.rawEntries[m.totalCount-lim:]
+		}
+	}
+
+	norm, cens := m.computeFn(selected)
+	if len(norm) == 0 {
+		m.Err = fmt.Errorf("no commands found after normalization")
+		return tea.Quit
+	}
+	m.normalized = norm
+	m.censored = cens
+
+	anyCensored := false
+	for i := range norm {
+		if i < len(cens) && norm[i].Command != cens[i].Command {
+			anyCensored = true
+			break
+		}
+	}
+
+	m.diffText = mutedStyle.Render(fmt.Sprintf("  └─ Reading %d commands...", len(norm))) + "\n" + renderCensorDiff(norm, cens)
+
+	m.censorOpts = []sfCensorOpt{
+		{fmt.Sprintf("Yes, send %d commands", len(cens)), "send"},
+	}
+	if anyCensored {
+		m.censorOpts = append(m.censorOpts,
+			sfCensorOpt{"Edit censored commands manually first", "edit"},
+			sfCensorOpt{"Send without censoring (not recommended)", "send_raw"},
+		)
+	}
+	m.censorOpts = append(m.censorOpts, sfCensorOpt{"No, abort", "abort"})
+	m.censorCursor = 0
+	m.step = sfStepCensor
+	return nil
+}
+
+func (m *scanFlowModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch m.step {
+	case sfStepScope:
+		return m.updateScope(msg)
+	case sfStepCensor:
+		return m.updateCensor(msg)
+	}
+	return m, nil
+}
+
+func (m *scanFlowModel) updateScope(msg tea.Msg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.scopeMdl.Update(msg)
+	m.scopeMdl = updated.(*historyScopeModel)
+	if m.scopeMdl.Aborted {
+		m.Aborted = true
+		return m, tea.Quit
+	}
+	if m.scopeMdl.Done {
+		// Discard the tea.Quit from the scope model and transition instead.
+		return m, m.transitionToCensor()
+	}
+	return m, cmd
+}
+
+func (m *scanFlowModel) updateCensor(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.Type {
+		case tea.KeyCtrlC, tea.KeyEsc:
+			m.Aborted = true
+			return m, tea.Quit
+		case tea.KeyLeft:
+			m.scopeMdl = newHistoryScopeModel(m.totalCount, m.diffCount, m.defaultN)
+			m.step = sfStepScope
+			return m, m.scopeMdl.Init()
+		case tea.KeyUp:
+			if m.censorCursor > 0 {
+				m.censorCursor--
+			}
+		case tea.KeyDown:
+			if m.censorCursor < len(m.censorOpts)-1 {
+				m.censorCursor++
+			}
+		case tea.KeyEnter:
+			switch m.censorOpts[m.censorCursor].val {
+			case "send":
+				m.ToSend = m.censored
+			case "edit":
+				m.WantsEdit = true
+			case "send_raw":
+				m.WantsSendRaw = true
+				m.ToSend = m.normalized
+			case "abort":
+				m.Aborted = true
+			}
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+func (m *scanFlowModel) View() string {
+	switch m.step {
+	case sfStepScope:
+		return m.scopeMdl.View()
+	case sfStepCensor:
+		return m.viewCensor()
+	}
+	return ""
+}
+
+func (m *scanFlowModel) viewCensor() string {
+	var sb strings.Builder
+	sb.WriteString(m.diffText)
+	sb.WriteString("\n")
+	sb.WriteString(nameStyle.Render(fmt.Sprintf("Send %d commands to the LLM?", len(m.censored))))
+	sb.WriteString("\n\n")
+	for i, opt := range m.censorOpts {
+		selector := "  "
+		if i == m.censorCursor {
+			selector = lipgloss.NewStyle().Foreground(claudeOrange).Render("▶ ")
+		}
+		var label string
+		if i == m.censorCursor {
+			label = lipgloss.NewStyle().Foreground(neonCyan).Render(opt.label)
+		} else {
+			label = mutedStyle.Render(opt.label)
+		}
+		fmt.Fprintf(&sb, "%s%s\n", selector, label)
+	}
+	sb.WriteString("\n")
+	sb.WriteString(mutedStyle.Render("↑↓ navigate  •  enter confirm  •  ← back"))
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// PromptScanFlow runs the interactive scope picker + censor review as a single
+// bubbletea program so all transitions (including ← back from censor) are in-place.
+// computeFn normalizes and censors the selected entries.
+// Returns (nil, true, nil) when the user aborted, or (entries, false, nil) on success.
+func PromptScanFlow(
+	rawEntries, diffEntries []history.Entry,
+	totalCount, diffCount, defaultN int,
+	computeFn func([]history.Entry) (normalized, censored []history.Entry),
+) (toSend []history.Entry, aborted bool, err error) {
+	m := &scanFlowModel{
+		rawEntries:  rawEntries,
+		diffEntries: diffEntries,
+		totalCount:  totalCount,
+		diffCount:   diffCount,
+		defaultN:    defaultN,
+		computeFn:   computeFn,
+	}
+	result, runErr := tea.NewProgram(m,
+		tea.WithOutput(os.Stderr),
+		tea.WithContext(context.Background()),
+		tea.WithReportFocus(),
+	).Run()
+	if runErr != nil {
+		return nil, false, fmt.Errorf("scan flow: %w", runErr)
+	}
+	fm := result.(*scanFlowModel)
+	if fm.Err != nil {
+		return nil, false, fm.Err
+	}
+	if fm.Aborted {
+		return nil, true, nil
+	}
+	if fm.WantsEdit {
+		edited, eerr := editEntriesInEditor(fm.censored)
+		if eerr != nil {
+			return nil, false, eerr
+		}
+		return edited, false, nil
+	}
+	if fm.WantsSendRaw {
+		PrintWarning("No censoring — raw commands sent to LLM. May include secrets or API keys.")
+	}
+	return fm.ToSend, false, nil
 }
 
 // noFilterKeyMap returns a keymap with the "/" filter key disabled, for
