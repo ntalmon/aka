@@ -228,24 +228,27 @@ func splitTemplate(tmpl string) []string {
 type reviewState int
 
 const (
-	reviewStateList   reviewState = iota // navigable list of all suggestions
-	reviewStateDetail                    // per-suggestion sub-menu (toggle/edit/back)
-	reviewStateEdit                      // inline name editor
+	reviewStateList        reviewState = iota // navigable list of all suggestions
+	reviewStateDetail                         // per-suggestion sub-menu (toggle/edit/back)
+	reviewStateEdit                           // inline name editor
+	reviewStateConfirmBack                    // "lose selections?" confirmation before aborting
 )
 
 // reviewListModel is the bubbletea model for the suggestion review screen.
 // All interactions run inside a single program so transitions are in-place.
 type reviewListModel struct {
-	suggestions  []llm.Suggestion
-	selected     []bool
-	names        []string
-	cursor       int // 0..len(suggestions); len(suggestions) == "Apply & exit" row
-	state        reviewState
-	detailCursor int // cursor within the detail sub-menu (0=toggle, 1=edit, 2=back)
-	editInput    textinput.Model
-	termWidth    int
-	Aborted      bool
-	Done         bool
+	suggestions   []llm.Suggestion
+	selected      []bool
+	names         []string
+	cursor        int // 0..len(suggestions); len(suggestions) == "Apply & exit" row
+	state         reviewState
+	detailCursor  int // cursor within the detail sub-menu (0=toggle, 1=edit, 2=back)
+	confirmCursor int // cursor within the back-confirmation prompt (0=No, 1=Yes)
+	editInput     textinput.Model
+	termWidth     int
+	Aborted       bool
+	WentBack      bool
+	Done          bool
 }
 
 func newReviewListModel(suggestions []llm.Suggestion) *reviewListModel {
@@ -292,6 +295,8 @@ func (m *reviewListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateDetail(msg)
 	case reviewStateEdit:
 		return m.updateEdit(msg)
+	case reviewStateConfirmBack:
+		return m.updateConfirmBack(msg)
 	}
 	return m, nil
 }
@@ -302,6 +307,9 @@ func (m *reviewListModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			m.Aborted = true
 			return m, tea.Quit
+		case tea.KeyLeft:
+			m.state = reviewStateConfirmBack
+			m.confirmCursor = 0
 		case tea.KeyUp:
 			if m.cursor > 0 {
 				m.cursor--
@@ -310,6 +318,10 @@ func (m *reviewListModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(m.suggestions) {
 				m.cursor++
 			}
+		case tea.KeySpace:
+			if !m.isOnApply() {
+				m.selected[m.cursor] = !m.selected[m.cursor]
+			}
 		case tea.KeyEnter:
 			if m.isOnApply() {
 				m.Done = true
@@ -317,6 +329,35 @@ func (m *reviewListModel) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.state = reviewStateDetail
 			m.detailCursor = 0
+		}
+	}
+	return m, nil
+}
+
+func (m *reviewListModel) updateConfirmBack(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.Type {
+		case tea.KeyCtrlC:
+			m.Aborted = true
+			return m, tea.Quit
+		case tea.KeyEsc:
+			m.state = reviewStateList
+		case tea.KeyUp:
+			if m.confirmCursor > 0 {
+				m.confirmCursor--
+			}
+		case tea.KeyDown:
+			if m.confirmCursor < 1 {
+				m.confirmCursor++
+			}
+		case tea.KeyTab:
+			m.confirmCursor = 1 - m.confirmCursor
+		case tea.KeyEnter:
+			if m.confirmCursor == 1 {
+				m.WentBack = true
+				return m, tea.Quit
+			}
+			m.state = reviewStateList
 		}
 	}
 	return m, nil
@@ -398,6 +439,8 @@ func (m *reviewListModel) View() string {
 		return m.viewDetail()
 	case reviewStateEdit:
 		return m.viewEdit()
+	case reviewStateConfirmBack:
+		return m.viewConfirmBack()
 	}
 	return ""
 }
@@ -435,7 +478,7 @@ func (m *reviewListModel) renderApplyRow(isActive bool) string {
 		return lipgloss.NewStyle().Foreground(claudeOrange).Render("▶ ") +
 			lipgloss.NewStyle().Foreground(neonCyan).Bold(true).Render(label) + "\n"
 	}
-	return "  " + nameStyle.Render(label) + "\n"
+	return "  " + lipgloss.NewStyle().Foreground(claudeOrange).Bold(true).Render(label) + "\n"
 }
 
 func (m *reviewListModel) viewList() string {
@@ -451,7 +494,39 @@ func (m *reviewListModel) viewList() string {
 		sb.WriteString(m.suggestionDetail(m.cursor))
 	}
 	sb.WriteString("\n")
-	sb.WriteString(mutedStyle.Render("↑↓ navigate  •  enter open  •  esc abort"))
+	sb.WriteString(mutedStyle.Render("↑↓ navigate  •  space toggle  •  enter open  •  ← back  •  esc abort"))
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+func (m *reviewListModel) viewConfirmBack() string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(nameStyle.Render("Review suggestions:"))
+	sb.WriteString("\n\n")
+	sb.WriteString(m.renderListRows(-1))
+	sb.WriteString("  " + mutedStyle.Render(strings.Repeat("─", 28)) + "\n")
+	sb.WriteString(m.renderApplyRow(false))
+	sb.WriteString("\n")
+	sb.WriteString(lipgloss.NewStyle().Foreground(claudeOrange).Render("Are you sure you want to go back and lose all the suggestions?"))
+	sb.WriteString("\n\n")
+	opts := []string{"No", "Yes, go back"}
+	for i, opt := range opts {
+		active := i == m.confirmCursor
+		selector := "  "
+		if active {
+			selector = lipgloss.NewStyle().Foreground(claudeOrange).Render("▶ ")
+		}
+		var label string
+		if active {
+			label = lipgloss.NewStyle().Foreground(neonCyan).Render(opt)
+		} else {
+			label = mutedStyle.Render(opt)
+		}
+		fmt.Fprintf(&sb, "%s%s\n", selector, label)
+	}
+	sb.WriteString("\n")
+	sb.WriteString(mutedStyle.Render("↑↓ navigate  •  enter confirm  •  esc cancel"))
 	sb.WriteString("\n")
 	return sb.String()
 }
@@ -616,16 +691,6 @@ func printOverviewEntry(idx int, s llm.Suggestion) {
 	}
 
 	fmt.Println(prefix + nameStyle.Render(name))
-	if s.Rationale != "" {
-		r := sanitizeForDisplay(s.Rationale)
-		if i := strings.IndexAny(r, ".!?"); i >= 0 && i < len(r)-1 {
-			r = r[:i+1]
-		}
-		if len(r) > 100 {
-			r = r[:97] + "..."
-		}
-		fmt.Println(mutedStyle.Render("     " + r))
-	}
 	for _, c := range cmdLines {
 		fmt.Println(commandLineStyle.Render("     │ " + c))
 	}
@@ -633,11 +698,12 @@ func printOverviewEntry(idx int, s llm.Suggestion) {
 
 // ReviewSuggestions presents all suggestions in a navigable list. The user
 // toggles each suggestion on/off, edits names, and applies via "Apply & exit".
-// Returns the accepted suggestions.
-func ReviewSuggestions(suggestions []llm.Suggestion) ([]llm.Suggestion, error) {
+// Returns the accepted suggestions and wentBack=true when the user navigated
+// back to the censor review step.
+func ReviewSuggestions(suggestions []llm.Suggestion) (accepted []llm.Suggestion, wentBack bool, err error) {
 	if len(suggestions) == 0 {
 		fmt.Println(mutedStyle.Render("No suggestions returned by the LLM."))
-		return nil, nil
+		return nil, false, nil
 	}
 	m := newReviewListModel(suggestions)
 	result, err := tea.NewProgram(m,
@@ -646,13 +712,15 @@ func ReviewSuggestions(suggestions []llm.Suggestion) ([]llm.Suggestion, error) {
 		tea.WithReportFocus(),
 	).Run()
 	if err != nil {
-		return nil, fmt.Errorf("review suggestions: %w", err)
+		return nil, false, fmt.Errorf("review suggestions: %w", err)
 	}
 	flow := result.(*reviewListModel)
-	if flow.Aborted {
-		return nil, huh.ErrUserAborted
+	if flow.WentBack {
+		return nil, true, nil
 	}
-	var accepted []llm.Suggestion
+	if flow.Aborted {
+		return nil, false, huh.ErrUserAborted
+	}
 	for i, sel := range flow.selected {
 		if sel {
 			s := suggestions[i]
@@ -661,7 +729,7 @@ func ReviewSuggestions(suggestions []llm.Suggestion) ([]llm.Suggestion, error) {
 			fmt.Println(successBarStyle.Render(fmt.Sprintf("✅ Alias %s accepted", sanitizeForDisplay(s.Name))))
 		}
 	}
-	return accepted, nil
+	return accepted, false, nil
 }
 
 func buildInvocation(s llm.Suggestion) string {
@@ -1564,14 +1632,6 @@ func PromptScanFlow(
 		PrintWarning("No censoring — raw commands sent to LLM. May include secrets or API keys.")
 	}
 	return fm.ToSend, false, nil
-}
-
-// noFilterKeyMap returns a keymap with the "/" filter key disabled, for
-// short selects where search is unnecessary and the keypress would be confusing.
-func noFilterKeyMap() *huh.KeyMap {
-	km := huh.NewDefaultKeyMap()
-	km.Select.Filter.SetEnabled(false)
-	return km
 }
 
 func cyberTheme() *huh.Theme {

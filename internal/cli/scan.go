@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
 	"github.com/ntalmon/aka/aka-cli/internal/aliases"
@@ -178,7 +179,12 @@ func runScan(cmd *cobra.Command, _ []string) error {
 
 	// Interactive scope + censor: run as a single in-place bubbletea program so
 	// back navigation from the censor step re-renders the scope picker in-place.
-	var censored []history.Entry
+	// normalizedForBack is the pre-censor slice; saved so the user can navigate
+	// back from the suggestions review to re-edit the censored data.
+	var (
+		censored          []history.Entry
+		normalizedForBack []history.Entry
+	)
 	if interactive && censorMode == "manual" {
 		defaultN := cfg.MaxHistory
 		if defaultN <= 0 {
@@ -187,6 +193,7 @@ func runScan(cmd *cobra.Command, _ []string) error {
 		computeFn := func(selected []history.Entry) ([]history.Entry, []history.Entry) {
 			norm := normalize.Normalize(selected)
 			cens, _ := censor.CensorAll(norm)
+			normalizedForBack = norm
 			return norm, cens
 		}
 		toSend, scanAborted, perr := ui.PromptScanFlow(
@@ -205,6 +212,7 @@ func runScan(cmd *cobra.Command, _ []string) error {
 		if len(normalized) == 0 {
 			return fmt.Errorf("no commands found after normalization")
 		}
+		normalizedForBack = normalized
 		ui.PrintStep(fmt.Sprintf("Reading %d commands...", len(normalized)))
 
 		var toSend []history.Entry
@@ -231,61 +239,82 @@ func runScan(cmd *cobra.Command, _ []string) error {
 		censored = toSend
 	}
 
-	// Call LLM.
-	ui.PrintStep(llm.FriendlyModelName(cfg.Provider, cfg.Model) + " is analyzing patterns...")
-	provider := buildProvider(cfg, apiKey)
-	suggestions, err := provider.Suggest(context.Background(), censored)
-	for {
-		var tokenErr *llm.ErrTokenLimit
-		if !errors.As(err, &tokenErr) || len(censored) <= 10 {
-			break
-		}
-		censored = censored[len(censored)/2:]
-		fmt.Printf("  Token limit exceeded; retrying with %d most recent commands...\n", len(censored))
-		suggestions, err = provider.Suggest(context.Background(), censored)
-	}
-	if err != nil {
-		return fmt.Errorf("LLM suggest: %w", err)
-	}
-
-	// Filter out suggestions whose names already exist in installed aliases or shell config files.
-	suggestions = filterExistingSuggestions(suggestions, shell)
-	if len(suggestions) == 0 {
-		fmt.Println("All suggestions already exist as aliases or functions — nothing new to apply.")
-		return nil
-	}
-	fmt.Println()
-	ui.PrintSuggestionsOverview(suggestions)
-
 	// Persist cursor so the next run knows where to start diff.
 	_ = config.SaveCursor(config.HistoryCursor{Total: totalRaw}, shell)
 
-	// Interactive review.
-	accepted, err := ui.ReviewSuggestions(suggestions)
-	if err != nil {
-		return fmt.Errorf("review suggestions: %w", err)
-	}
+	// LLM + review loop. Re-enters when the user navigates back from the
+	// suggestions screen to re-edit the censored data and re-call the LLM.
+	provider := buildProvider(cfg, apiKey)
+	for {
+		ui.PrintStep(llm.FriendlyModelName(cfg.Provider, cfg.Model) + " is analyzing patterns...")
+		suggestions, llmErr := provider.Suggest(context.Background(), censored)
+		for {
+			var tokenErr *llm.ErrTokenLimit
+			if !errors.As(llmErr, &tokenErr) || len(censored) <= 10 {
+				break
+			}
+			censored = censored[len(censored)/2:]
+			fmt.Printf("  Token limit exceeded; retrying with %d most recent commands...\n", len(censored))
+			suggestions, llmErr = provider.Suggest(context.Background(), censored)
+		}
+		if llmErr != nil {
+			return fmt.Errorf("LLM suggest: %w", llmErr)
+		}
 
-	if len(accepted) == 0 {
-		fmt.Println("No suggestions accepted.")
+		suggestions = filterExistingSuggestions(suggestions, shell)
+		if len(suggestions) == 0 {
+			fmt.Println("All suggestions already exist as aliases or functions — nothing new to apply.")
+			return nil
+		}
+		fmt.Println()
+		ui.PrintSuggestionsOverview(suggestions)
+
+		accepted, wentBack, reviewErr := ui.ReviewSuggestions(suggestions)
+		if errors.Is(reviewErr, huh.ErrUserAborted) {
+			fmt.Println("Aborted.")
+			return nil
+		}
+		if reviewErr != nil {
+			return fmt.Errorf("review suggestions: %w", reviewErr)
+		}
+
+		if wentBack {
+			// Re-run censor review so the user can edit the censored data before
+			// we call the LLM again.
+			fmt.Println()
+			ui.PrintCensorDiff(normalizedForBack, censored)
+			result, _, rerr := ui.ReviewCensored(normalizedForBack, censored, false)
+			if rerr != nil {
+				return fmt.Errorf("censor review: %w", rerr)
+			}
+			if result == nil {
+				fmt.Println("Aborted.")
+				return nil
+			}
+			censored = result
+			continue
+		}
+
+		if len(accepted) == 0 {
+			fmt.Println("No suggestions accepted.")
+			return nil
+		}
+
+		skipped, applyErr := apply.Apply(accepted, shell)
+		if applyErr != nil {
+			return fmt.Errorf("apply: %w", applyErr)
+		}
+
+		if len(skipped) > 0 {
+			fmt.Printf("\nSkipped (name conflicts): %s\n", strings.Join(skipped, ", "))
+		}
+
+		aliasesPath, _ := config.GetAliasesPath(shell)
+		ui.PrintSuccess(fmt.Sprintf("\n✓ Applied %d alias(es)/function(s)!", len(accepted)-len(skipped)))
+		fmt.Printf("  Written to: %s\n", aliasesPath)
+		fmt.Printf("  Aliases reloaded in current shell (or run: source ~/.config/aka/%s/aliases.sh)\n", shell)
 		return nil
 	}
-
-	// Apply accepted suggestions.
-	skipped, err := apply.Apply(accepted, shell)
-	if err != nil {
-		return fmt.Errorf("apply: %w", err)
-	}
-
-	if len(skipped) > 0 {
-		fmt.Printf("\nSkipped (name conflicts): %s\n", strings.Join(skipped, ", "))
-	}
-
-	aliasesPath, _ := config.GetAliasesPath(shell)
-	ui.PrintSuccess(fmt.Sprintf("\n✓ Applied %d alias(es)/function(s)!", len(accepted)-len(skipped)))
-	fmt.Printf("  Written to: %s\n", aliasesPath)
-	fmt.Printf("  Aliases reloaded in current shell (or run: source ~/.config/aka/%s/aliases.sh)\n", shell)
-	return nil
 }
 
 func filterExistingSuggestions(suggestions []llm.Suggestion, shell string) []llm.Suggestion {
