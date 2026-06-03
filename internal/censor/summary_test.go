@@ -40,25 +40,14 @@ func TestSummarizeMultipleTokens(t *testing.T) {
 
 func TestSummarizeMixedCategories(t *testing.T) {
 	rm := map[string]string{
-		"<TOKEN_1>": "sk-ant-abc",
-		"<IP_1>":    "192.168.1.1",
+		"<TOKEN_1>":   "sk-ant-abc",
+		"<PASSWORD_1>": "hunter2",
 	}
 	got := Summarize(rm)
-	if !strings.Contains(got, "1 token") || !strings.Contains(got, "1 IP address") {
+	if !strings.Contains(got, "1 token") || !strings.Contains(got, "1 password") {
 		t.Errorf("unexpected summary: %q", got)
 	}
 	if !strings.HasPrefix(got, "Masked ") || !strings.HasSuffix(got, ".") {
 		t.Errorf("summary format wrong: %q", got)
-	}
-}
-
-func TestSummarizePluralIP(t *testing.T) {
-	rm := map[string]string{
-		"<IP_1>": "10.0.0.1",
-		"<IP_2>": "10.0.0.2",
-	}
-	got := Summarize(rm)
-	if got != "Masked 2 IP addresses." {
-		t.Errorf("unexpected summary: %q", got)
 	}
 }

@@ -55,14 +55,6 @@ var secretPatterns = []secretPattern{
 	{regexp.MustCompile(`(?i)(password|passwd|pass|pwd)=\S+`), "PASSWORD", 0},
 	// URL credentials: ://user:pass@host.
 	{regexp.MustCompile(`://[^:@\s]+:[^@\s]+@`), "URL_CREDS", 0},
-	// Full git commit SHA-1 hashes (40 lowercase hex chars).
-	{regexp.MustCompile(`\b[0-9a-f]{40}\b`), "COMMIT_HASH", 0},
-	// Git commit message: -m "..." — replace only the message text (group 2), keeping -m "...".
-	{regexp.MustCompile(`(-m\s+")([^"]*)(")`), "COMMIT_MSG", 2},
-	// Git commit message: -m '...'
-	{regexp.MustCompile(`(-m\s+')([^']*)(')`), "COMMIT_MSG", 2},
-	// Git commit message: --message=value
-	{regexp.MustCompile(`(--message=)(\S+)`), "COMMIT_MSG", 2},
 }
 
 // shannonEntropy calculates the Shannon entropy of a string in bits/char.
@@ -323,6 +315,23 @@ func anyHasDigit(ss []string) bool {
 	return false
 }
 
+// fileExtensions is the set of common file extensions that should not be
+// mistaken for hostname TLDs (e.g. "build.sh" is not a hostname).
+var fileExtensions = map[string]bool{
+	"sh": true, "bash": true, "zsh": true, "fish": true,
+	"py": true, "rb": true, "pl": true, "php": true,
+	"go": true, "rs": true, "c": true, "cpp": true, "h": true,
+	"java": true, "kt": true, "swift": true, "cs": true,
+	"js": true, "ts": true, "jsx": true, "tsx": true,
+	"html": true, "css": true, "scss": true, "sass": true,
+	"json": true, "yaml": true, "yml": true, "toml": true,
+	"xml": true, "conf": true, "cfg": true, "ini": true,
+	"txt": true, "md": true, "rst": true, "log": true,
+	"sql": true, "env": true, "pem": true, "crt": true, "key": true,
+	"gz": true, "tar": true, "zip": true, "bz2": true, "xz": true,
+	"tmp": true, "bak": true, "lock": true,
+}
+
 // inferVarType guesses the typed placeholder based on value.
 func inferVarType(value string, idx int) string {
 	v := strings.ToLower(value)
@@ -339,8 +348,11 @@ func inferVarType(value string, idx int) string {
 		return "PORT"
 	}
 	// Hostname-like: contains dots but no slashes, looks like a domain.
+	// Exclude values whose suffix is a known file extension (e.g. "build.sh").
 	if strings.Contains(v, ".") && !strings.Contains(v, "/") && !strings.HasPrefix(v, "<") {
-		return "HOST"
+		if dot := strings.LastIndex(v, "."); dot >= 0 && !fileExtensions[v[dot+1:]] {
+			return "HOST"
+		}
 	}
 	_ = v
 	_ = idx
@@ -415,13 +427,12 @@ func ParameterizeVars(commands []string) (parameterized []string, varMap map[str
 				continue
 			}
 			peekTyp := inferVarType(vals[0], si)
-			// Ports and paths are never parameterized.
-			if peekTyp == "PATH" || peekTyp == "PORT" {
+			// Ports, paths, and IP addresses are never parameterized.
+			if peekTyp == "PATH" || peekTyp == "PORT" || peekTyp == "IP" {
 				continue
 			}
-			// Git positional args (branch names, remotes, tags, refs) are not
-			// parameterized — only IPs are, as they may reveal network topology.
-			if binary == "git" && peekTyp != "IP" {
+			// Git positional args (branch names, remotes, tags, refs) are never parameterized.
+			if binary == "git" {
 				continue
 			}
 			// VAR-typed slots with no digit in any value are treated as subcommand
@@ -430,9 +441,8 @@ func ParameterizeVars(commands []string) (parameterized []string, varMap map[str
 			if peekTyp == "VAR" && !anyHasDigit(vals) {
 				continue
 			}
-			// IPs are always parameterized (even a single distinct value).
-			// All other types require ≥2 distinct values.
-			if peekTyp != "IP" && len(vals) < 2 {
+			// Require ≥2 distinct values to parameterize a slot.
+			if len(vals) < 2 {
 				continue
 			}
 			sorted := make([]string, len(vals))
@@ -491,7 +501,18 @@ func ParameterizeVars(commands []string) (parameterized []string, varMap map[str
 				parts = append(parts, t.value)
 			} else {
 				if ph, ok := slotVars[posIdx]; ok {
-					parts = append(parts, ph)
+					// Per-value guards: never replace IP addresses, and for VAR-typed
+					// slots only replace values that contain a digit (plain identifiers
+					// like package/command names are left as-is).
+					inner := strings.TrimSuffix(strings.TrimPrefix(ph, "<"), ">")
+					typ := strings.SplitN(inner, "_", 2)[0]
+					if isIPv4(t.value) {
+						parts = append(parts, t.value)
+					} else if typ == "VAR" && !anyHasDigit([]string{t.value}) {
+						parts = append(parts, t.value)
+					} else {
+						parts = append(parts, ph)
+					}
 				} else {
 					parts = append(parts, t.value)
 				}
@@ -514,12 +535,6 @@ func labelFriendly(label string) string {
 		return "password"
 	case "URL_CREDS":
 		return "URL credential"
-	case "COMMIT_HASH":
-		return "commit hash"
-	case "COMMIT_MSG":
-		return "commit message"
-	case "IP":
-		return "IP address"
 	case "HOST":
 		return "hostname"
 	case "VAR":
@@ -549,7 +564,7 @@ func Summarize(redactionMap map[string]string) string {
 	}
 
 	// Emit in deterministic order matching labelFriendly's switch cases.
-	order := []string{"TOKEN", "SECRET", "PASSWORD", "URL_CREDS", "COMMIT_HASH", "COMMIT_MSG", "IP", "HOST", "VAR"}
+	order := []string{"TOKEN", "SECRET", "PASSWORD", "URL_CREDS", "HOST", "VAR"}
 	var parts []string
 	for _, label := range order {
 		n := counts[label]

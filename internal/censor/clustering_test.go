@@ -111,7 +111,7 @@ func TestParameterizeVarsMixedCluster(t *testing.T) {
 			t.Errorf("git push branch was incorrectly parameterized: %q (original: %q)", p, cmds[i])
 		}
 	}
-	// ssh targets (with digits) should be parameterized.
+	// ssh targets with digits should be parameterized.
 	for _, p := range parameterized {
 		if strings.HasPrefix(p, "ssh") && !strings.Contains(p, "<") {
 			t.Errorf("ssh target not parameterized: %q", p)
@@ -122,20 +122,32 @@ func TestParameterizeVarsMixedCluster(t *testing.T) {
 	}
 }
 
-func TestParameterizeVarsIPAlwaysCensored(t *testing.T) {
-	// IP appears only once but should still be parameterized.
+func TestParameterizeVarsIPNotCensored(t *testing.T) {
 	cmds := []string{
 		"uvicorn web_server:app --host 0.0.0.0 --port 8080",
 	}
-	parameterized, varMap := ParameterizeVars(cmds)
-	if strings.Contains(parameterized[0], "0.0.0.0") {
-		t.Errorf("IP address not replaced: %q", parameterized[0])
+	parameterized, _ := ParameterizeVars(cmds)
+	if !strings.Contains(parameterized[0], "0.0.0.0") {
+		t.Errorf("IP address should not be replaced: %q", parameterized[0])
 	}
-	if !strings.Contains(parameterized[0], "<IP_") {
-		t.Errorf("expected <IP_n> placeholder: %q", parameterized[0])
+	if strings.Contains(parameterized[0], "<IP_") {
+		t.Errorf("unexpected <IP_n> placeholder: %q", parameterized[0])
 	}
-	if len(varMap) == 0 {
-		t.Error("varMap should not be empty")
+}
+
+func TestParameterizeVarsIPNotCensoredInMixedCluster(t *testing.T) {
+	// IP appears alongside non-IP values in the same slot; the IP must not be replaced
+	// even though vals[0] is not an IP and the slot gets a VAR placeholder.
+	cmds := []string{
+		"ssh devserver1",
+		"ssh 192.168.1.1",
+		"ssh devserver2",
+	}
+	parameterized, _ := ParameterizeVars(cmds)
+	for _, p := range parameterized {
+		if strings.HasPrefix(p, "ssh 192") && !strings.Contains(p, "192.168.1.1") {
+			t.Errorf("IP address was replaced in mixed cluster: %q", p)
+		}
 	}
 }
 
@@ -155,20 +167,74 @@ func TestParameterizeVarsPortNotCensored(t *testing.T) {
 	}
 }
 
-func TestParameterizeVarsIPVaryingCensored(t *testing.T) {
-	// Multiple distinct IPs should all map to the same placeholder.
+func TestParameterizeVarsFileExtensionNotHost(t *testing.T) {
+	// Filenames like "build.sh" contain a dot but are not hostnames.
+	cmds := []string{
+		"chmod +x build.sh",
+		"chmod +x deploy.sh",
+	}
+	parameterized, _ := ParameterizeVars(cmds)
+	for _, p := range parameterized {
+		if strings.Contains(p, "<HOST_") {
+			t.Errorf("filename was incorrectly classified as hostname: %q", p)
+		}
+	}
+}
+
+func TestParameterizeVarsIPVaryingNotCensored(t *testing.T) {
 	cmds := []string{
 		"ssh 192.168.1.1",
 		"ssh 10.0.0.5",
 		"ssh 172.16.0.1",
 	}
 	parameterized, _ := ParameterizeVars(cmds)
-	for _, p := range parameterized {
-		if !strings.Contains(p, "<IP_") {
-			t.Errorf("expected <IP_n> placeholder: %q", p)
+	ips := []string{"192.168.1.1", "10.0.0.5", "172.16.0.1"}
+	for i, p := range parameterized {
+		if !strings.Contains(p, ips[i]) {
+			t.Errorf("IP address should not be replaced: %q", p)
 		}
 	}
-	if parameterized[0] != parameterized[1] || parameterized[1] != parameterized[2] {
-		t.Errorf("varying IPs got different parameterizations: %v", parameterized)
+}
+
+func TestParameterizeVarsDigitFreeIdentifiersPreserved(t *testing.T) {
+	// When a VAR slot is activated by digit-containing values, digit-free values
+	// in the same cluster must not be replaced (e.g. "gh" stays "gh").
+	cmds := []string{
+		"brew install gh",
+		"brew install python3",
+		"brew install node@18",
+	}
+	parameterized, _ := ParameterizeVars(cmds)
+	for _, p := range parameterized {
+		if strings.HasPrefix(p, "brew install gh") && strings.Contains(p, "<") {
+			t.Errorf("digit-free package name was replaced: %q", p)
+		}
+	}
+}
+
+func TestParameterizeVarsWhichIdentifierPreserved(t *testing.T) {
+	cmds := []string{
+		"which aka",
+		"which python3",
+	}
+	parameterized, _ := ParameterizeVars(cmds)
+	for _, p := range parameterized {
+		if strings.HasPrefix(p, "which aka") && strings.Contains(p, "<") {
+			t.Errorf("digit-free command name was replaced: %q", p)
+		}
+	}
+}
+
+func TestParameterizeVarsBareFilenamePreserved(t *testing.T) {
+	// PLAN.md has no digit — should not be replaced even if other mv sources do.
+	cmds := []string{
+		"mv PLAN.md plans/AKA.md",
+		"mv file1.md plans/file1.md",
+	}
+	parameterized, _ := ParameterizeVars(cmds)
+	for _, p := range parameterized {
+		if strings.HasPrefix(p, "mv PLAN.md") && strings.Contains(p, "<VAR") {
+			t.Errorf("digit-free filename was replaced: %q", p)
+		}
 	}
 }

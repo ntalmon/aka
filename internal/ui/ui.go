@@ -78,9 +78,7 @@ func PrintStepLabeled(label, text string) {
 
 // renderCensorDiff returns a colored diff string of commands modified by the censor pass.
 func renderCensorDiff(original, censored []history.Entry) string {
-	const maxLines = 50
 	var sb strings.Builder
-	lines := 0
 	changed := 0
 	for i, orig := range original {
 		if i >= len(censored) {
@@ -88,22 +86,14 @@ func renderCensorDiff(original, censored []history.Entry) string {
 		}
 		if orig.Command != censored[i].Command {
 			changed++
-			if lines+2 <= maxLines {
-				sb.WriteString(removeStyle.Render("- "+orig.Command) + "\n")
-				sb.WriteString(addStyle.Render("+ "+censored[i].Command) + "\n")
-				lines += 2
-			}
+			sb.WriteString(removeStyle.Render("- "+orig.Command) + "\n")
+			sb.WriteString(addStyle.Render("+ "+censored[i].Command) + "\n")
 		}
 	}
 	if changed == 0 {
 		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(neonGreen).Render("  ✓ No sensitive data detected.") + "\n")
 	} else {
-		shown := lines / 2
-		suffix := ""
-		if shown < changed {
-			suffix = fmt.Sprintf(" (%d more not shown)", changed-shown)
-		}
-		sb.WriteString(mutedStyle.Render(fmt.Sprintf("  %d of %d command(s) modified by censor.%s", changed, len(original), suffix)) + "\n")
+		sb.WriteString(mutedStyle.Render(fmt.Sprintf("  %d of %d command(s) modified by censor.", changed, len(original))) + "\n")
 	}
 	return sb.String()
 }
@@ -1477,7 +1467,25 @@ func (m *scanFlowModel) transitionToCensor() tea.Cmd {
 		}
 	}
 
-	m.diffText = mutedStyle.Render(fmt.Sprintf("  └─ Reading %d commands...", len(norm))) + "\n" + renderCensorDiff(norm, cens)
+	// Count changed commands for the summary shown in the censor menu.
+	changedCount := 0
+	for i := range norm {
+		if i < len(cens) && norm[i].Command != cens[i].Command {
+			changedCount++
+		}
+	}
+
+	// Print the full diff via tea.Println so it is written above the TUI
+	// viewport and persists in the terminal scrollback after the program exits.
+	header := mutedStyle.Render(fmt.Sprintf("  └─ Reading %d commands...", len(norm)))
+	printCmd := tea.Println(header + "\n" + strings.TrimRight(renderCensorDiff(norm, cens), "\n"))
+
+	// The censor menu shows only a one-line summary; the full diff is in scrollback.
+	if changedCount == 0 {
+		m.diffText = lipgloss.NewStyle().Bold(true).Foreground(neonGreen).Render("  ✓ No sensitive data detected.")
+	} else {
+		m.diffText = mutedStyle.Render(fmt.Sprintf("  %d of %d command(s) modified by censor.", changedCount, len(norm)))
+	}
 
 	m.censorOpts = []sfCensorOpt{
 		{fmt.Sprintf("Yes, send %d commands", len(cens)), "send"},
@@ -1491,7 +1499,7 @@ func (m *scanFlowModel) transitionToCensor() tea.Cmd {
 	m.censorOpts = append(m.censorOpts, sfCensorOpt{"No, abort", "abort"})
 	m.censorCursor = 0
 	m.step = sfStepCensor
-	return nil
+	return printCmd
 }
 
 func (m *scanFlowModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

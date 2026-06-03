@@ -92,38 +92,20 @@ func TestCensorSecretsDontRedactNormalStrings(t *testing.T) {
 	}
 }
 
-func TestCensorSecretsGitCommitHash(t *testing.T) {
+func TestCensorSecretsGitCommitHashNotCensored(t *testing.T) {
 	hash := "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
 	cmds := []string{"git show " + hash}
 	censored, _ := CensorSecrets(cmds)
-	if strings.Contains(censored[0], hash) {
-		t.Errorf("commit hash not censored: %q", censored[0])
-	}
-	if !strings.Contains(censored[0], "<COMMIT_HASH_") {
-		t.Errorf("expected <COMMIT_HASH_n> placeholder: %q", censored[0])
+	if !strings.Contains(censored[0], hash) {
+		t.Errorf("commit hash should not be censored: %q", censored[0])
 	}
 }
 
-func TestCensorSecretsGitCommitMessageDoubleQuoted(t *testing.T) {
+func TestCensorSecretsGitCommitMessageNotCensored(t *testing.T) {
 	cmds := []string{`git commit -m "fix authentication bug"`}
 	censored, _ := CensorSecrets(cmds)
-	if strings.Contains(censored[0], "fix authentication bug") {
-		t.Errorf("commit message not censored: %q", censored[0])
-	}
-	// -m " prefix should be preserved.
-	if !strings.Contains(censored[0], `-m "`) {
-		t.Errorf("expected -m flag and opening quote preserved: %q", censored[0])
-	}
-}
-
-func TestCensorSecretsGitCommitMessageSingleQuoted(t *testing.T) {
-	cmds := []string{"git commit -m 'feat: add login screen'"}
-	censored, _ := CensorSecrets(cmds)
-	if strings.Contains(censored[0], "feat: add login screen") {
-		t.Errorf("commit message not censored: %q", censored[0])
-	}
-	if !strings.Contains(censored[0], "-m '") {
-		t.Errorf("expected -m flag and opening quote preserved: %q", censored[0])
+	if !strings.Contains(censored[0], "fix authentication bug") {
+		t.Errorf("commit message should not be censored: %q", censored[0])
 	}
 }
 
