@@ -26,6 +26,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: anthropics/claude-code-action@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251 # v1.0.133
+      - uses: anthropics/claude-code-action@536f2c32a39763739000b0e1ac69ca2647d97ce9 # v1.0.170
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
