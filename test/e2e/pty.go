@@ -177,46 +177,66 @@ func (a *ansiChunker) flush() string {
 }
 
 // splitTrailingEscape separates data into a safe-to-strip prefix and a
-// possibly-incomplete escape sequence at the very end. readLoop feeds output
-// through stripANSI in whatever chunks Read() happens to return them, and a
-// bubbletea/huh full-screen redraw can exceed one 4096-byte chunk, so a
-// CSI/OSC sequence can be split across two reads. Stripping each chunk in
+// possibly-incomplete escape sequence held back at the end. readLoop feeds
+// output through stripANSI in whatever chunks Read() happens to return them,
+// and a bubbletea/huh full-screen redraw can exceed one 4096-byte chunk, so
+// a CSI/OSC sequence can be split across two reads. Stripping each chunk in
 // isolation would let the truncated half leak into the stripped buffer as
 // literal bytes, corrupting the exact buffer Expect/Screen assert against.
 //
-// data's last ESC (0x1b) byte is the pivot: if what follows it is already a
-// complete, recognised escape sequence, everything is safe to strip —
-// anything after a complete match is guaranteed plain text, since it's the
-// *last* ESC in data. Otherwise the sequence starting at that ESC is still
-// accumulating bytes, so everything from it onward is held back for the next
-// call while everything before it (the prefix) is stripped and released
-// immediately.
+// The real invariant: only trust what ansiRE has *already fully matched*.
+// Never assume anything about what a bare ESC byte means before checking —
+// in particular, never assume every ESC *starts* a sequence. That
+// assumption was this function's original design and it was wrong: an OSC
+// sequence can terminate two ways, BEL (\a) or ST (ESC \), and an ST
+// terminator's ESC *closes* a sequence, it doesn't open one. Pivoting on
+// "the last ESC byte in data" treated an already-complete OSC sequence's own
+// closing ST as "the start of a new, incomplete sequence" and held back (and
+// once concatenated with the next chunk, leaked as raw literal bytes) an OSC
+// opener that was, in fact, already fully resolved. See git history for the
+// regression this produced and TestAnsiChunkerSplitInsideSTTerminatedOSC /
+// TestNoSplitMatchesUnsplitStripANSI for the pinned fix.
 //
-// That prefix-release is exact for well-formed input: nothing before the
-// pivot ESC can itself be an incomplete sequence, because if it were, *it*
-// would be the last ESC, not the one we picked. It is intentionally
-// terminal-accurate, not "safe", for malformed input: if an incomplete
-// sequence is immediately followed by bytes that happen to complete a
-// *different* valid sequence once concatenated (e.g. holding back "\x1b[3"
-// and then receiving "randomtext" — "\x1b[3r" is a syntactically valid CSI
-// sequence, since 'r' falls in the final-byte range [@-~], and gets stripped
-// along with its leading digit, same as "\x1b[3rANDOMTEXT" would strip the
-// same way if it arrived as one write) — the result matches what a real
-// terminal emulator would render for that same malformed byte stream. That
-// is the desired behaviour for a harness asserting on terminal output: it is
-// not this function's job to second-guess or repair a program that writes
-// syntactically ambiguous escape sequences, only to strip exactly what a
-// terminal would. See TestSplitTrailingEscapeMalformedInputMatchesTerminal.
+// The correct approach:
+//  1. Find every complete match in data, left to right (ansiRE.FindAllIndex)
+//     — the same matches ReplaceAllString would find, in the same order, so
+//     this function and stripANSI can never disagree about what "complete"
+//     means.
+//  2. Let end be the byte offset right after the last complete match (0 if
+//     there were none). Everything in data[:end] is either plain text or one
+//     of those already-resolved matches: safe, unconditionally.
+//  3. Search data[end:] — the region past every known-complete match — for
+//     the first ESC byte. By construction nothing before it can be part of
+//     any sequence, complete or incomplete: an escape sequence must start
+//     with an ESC, and this is the first one after end.
+//  4. Everything before that ESC (or the whole of data[end:], if it contains
+//     no ESC at all) is safe too. From that ESC onward might be a sequence
+//     still accumulating bytes, so it's held back for the next call.
+//
+// This is exact for well-formed input, and intentionally terminal-accurate
+// (not "safe") for malformed input: if an incomplete sequence in data[end:]
+// is immediately followed by bytes that happen to complete a *different*
+// valid sequence once concatenated with a later chunk (e.g. holding back
+// "\x1b[3" and then receiving "randomtext" — "\x1b[3r" is a syntactically
+// valid CSI sequence, since 'r' falls in the final-byte range [@-~], and
+// gets stripped along with its leading digit, exactly as
+// "\x1b[3rANDOMTEXT" would strip if it arrived as one write) — the result
+// matches what a real terminal emulator would render for that same
+// malformed byte stream. That is the desired behaviour for a harness
+// asserting on terminal output: it is not this function's job to
+// second-guess or repair a program that writes syntactically ambiguous
+// escape sequences, only to strip exactly what a terminal would. See
+// TestSplitTrailingEscapeMalformedInputMatchesTerminal.
 func splitTrailingEscape(data []byte) (safe, rest []byte) {
-	i := bytes.LastIndexByte(data, 0x1b)
-	if i < 0 {
-		return data, nil
+	end := 0
+	if matches := ansiRE.FindAllIndex(data, -1); len(matches) > 0 {
+		end = matches[len(matches)-1][1]
 	}
-	tail := data[i:]
-	if loc := ansiRE.FindIndex(tail); loc != nil && loc[0] == 0 {
-		return data, nil
+	tail := data[end:]
+	if i := bytes.IndexByte(tail, 0x1b); i >= 0 {
+		return data[:end+i], data[end+i:]
 	}
-	return data[:i], tail
+	return data, nil
 }
 
 // stripANSI removes escape sequences and normalises PTY line endings so

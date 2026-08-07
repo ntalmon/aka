@@ -226,6 +226,122 @@ func TestAnsiChunkerSplitInsideOSCSequence(t *testing.T) {
 	}
 }
 
+// This is the regression test for the Critical bug found in re-review round
+// 3: OSC sequences terminate two ways, BEL (\a) or ST (ESC \), and
+// splitTrailingEscape's original "pivot on the last ESC in data" logic
+// assumed every ESC *opens* a sequence. ST's ESC *closes* one. That false
+// assumption made an already-complete, ST-terminated OSC sequence's own
+// terminator look like "the start of a new incomplete sequence", so the
+// (already fully resolved) OSC opener before it got held back and then
+// leaked into the stripped buffer as raw literal bytes — and this broke with
+// *zero* chunk splitting involved, it was a bug in splitTrailingEscape
+// itself, not a chunking artifact (see
+// TestNoSplitMatchesUnsplitStripANSI, which is the test that would have
+// caught it directly). It is not a hypothetical: bubbletea's package init()
+// triggers lipgloss.HasDarkBackground(), which makes termenv query the
+// terminal with exactly an OSC 11 + ST sequence on the first paint, and none
+// of termenv's guards (CI env var, TERM=screen/tmux/dumb) are set by
+// Dockerfile.e2e — so a real `aka` TUI test could emit this and silently
+// corrupt Console's buffer before any assertion even runs.
+//
+// Table-driven, exhaustive-every-byte-boundary, same shape as the BEL test
+// above, covering the two concrete ST-terminated sequences this codebase's
+// own dependency graph can actually emit: OSC 8 (hyperlinks, used by
+// lipgloss/huh styling) and OSC 11 (background colour query, used by
+// termenv/lipgloss.HasDarkBackground on every bubbletea program's init).
+func TestAnsiChunkerSplitInsideSTTerminatedOSC(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		full string
+		want string
+	}{
+		{
+			name: "OSC8 hyperlink, ST-terminated",
+			full: "before\x1b]8;;http://example.com\x1b\\after",
+			want: "beforeafter",
+		},
+		{
+			name: "OSC11 background colour query, ST-terminated",
+			full: "before\x1b]11;?\x1b\\after",
+			want: "beforeafter",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := feedAll([]byte(tc.full)); got != tc.want {
+				t.Fatalf("sanity check (unsplit) = %q, want %q", got, tc.want)
+			}
+
+			for i := 1; i < len(tc.full); i++ {
+				if got := feedAll([]byte(tc.full[:i]), []byte(tc.full[i:])); got != tc.want {
+					t.Errorf("split at byte %d (%q | %q) = %q, want %q",
+						i, tc.full[:i], tc.full[i:], got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// A realistic mixed fixture matching what a real bubbletea program's first
+// paint can actually emit: termenv's OSC 11 (ST-terminated) background
+// colour query immediately followed by ordinary CSI/SGR styling and plain
+// text. This is the shape of the exact scenario described in
+// TestAnsiChunkerSplitInsideSTTerminatedOSC's doc comment — an ST-terminated
+// OSC sequence is not the whole story a real Console will see, it will
+// almost always be immediately followed by styled program output on the
+// same read or the next one.
+func TestAnsiChunkerSplitMixedFirstPaintFixture(t *testing.T) {
+	t.Parallel()
+
+	const full = "\x1b]11;?\x1b\\\x1b[32mgreen\x1b[0m done"
+	const want = "green done"
+
+	if got := feedAll([]byte(full)); got != want {
+		t.Fatalf("sanity check (unsplit) = %q, want %q", got, want)
+	}
+
+	for i := 1; i < len(full); i++ {
+		if got := feedAll([]byte(full[:i]), []byte(full[i:])); got != want {
+			t.Errorf("split at byte %d (%q | %q) = %q, want %q",
+				i, full[:i], full[i:], got, want)
+		}
+	}
+}
+
+// This is the test that would have caught the round-3 Critical bug directly:
+// it asserts feedAll's output for a *single, unsplit* chunk equals stripANSI
+// applied to the same string directly — no chunk boundary involved at all.
+// The ST-terminated-OSC bug broke this even with zero splitting, because it
+// was a defect in splitTrailingEscape's pivot logic itself, not something
+// that only manifested at an inconvenient Read() boundary. Table-driven
+// across CSI, OSC-BEL, OSC-ST, and a mixed fixture so this class of "the
+// non-split case is broken" bug can't hide in just one input shape again.
+func TestNoSplitMatchesUnsplitStripANSI(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{
+		"\x1b[32mgreen\x1b[0m plain \x1b[1mbold\x1b[0m", // CSI/SGR
+		"before\x1b]0;window title\aafter",              // OSC, BEL-terminated
+		"before\x1b]8;;http://example.com\x1b\\after",   // OSC 8 hyperlink, ST-terminated
+		"before\x1b]11;?\x1b\\after",                    // OSC 11 colour query, ST-terminated
+		"\x1b]11;?\x1b\\\x1b[32mgreen\x1b[0m done",      // mixed: OSC11 query + CSI + plain
+		"\x1b[3" + "randomtext",                         // malformed, pinned separately too
+	}
+
+	for _, full := range cases {
+		want := stripANSI(full)
+		if got := feedAll([]byte(full)); got != want {
+			t.Errorf("feedAll(single unsplit chunk %q) = %q, want %q (stripANSI applied directly)",
+				full, got, want)
+		}
+	}
+}
+
 // Pins the documented malformed-input behaviour from splitTrailingEscape's
 // doc comment: an incomplete sequence held back across a chunk boundary,
 // followed by bytes that happen to complete a *different* valid sequence
