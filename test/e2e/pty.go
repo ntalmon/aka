@@ -92,33 +92,88 @@ func newConsole(t *testing.T, cmd *exec.Cmd) *Console {
 func (c *Console) readLoop() {
 	defer close(c.readDone)
 	buf := make([]byte, 4096)
-	// pending holds bytes carried over from the previous chunk that might be
-	// the start of a CSI/OSC sequence Read() cut off mid-way. It is owned
-	// exclusively by this goroutine, so it needs no locking of its own.
-	var pending []byte
+	// chunker is owned exclusively by this goroutine (readLoop is the only
+	// caller of feed/flush), so it needs no locking of its own — only the
+	// shared c.raw/c.stripped builders it writes into do.
+	var chunker ansiChunker
 	for {
 		n, err := c.ptmx.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
 			c.mu.Lock()
 			c.raw.Write(chunk)
-			data := append(pending, chunk...)
-			safe, rest := splitTrailingEscape(data)
-			c.stripped.WriteString(stripANSI(string(safe)))
+			c.stripped.WriteString(chunker.feed(chunk))
 			c.mu.Unlock()
-			pending = rest
 		}
 		if err != nil {
-			if len(pending) > 0 {
+			if s := chunker.flush(); s != "" {
 				// Stream ended mid-sequence (or with a stray ESC that never
 				// resolved). Flush best-effort rather than dropping it.
 				c.mu.Lock()
-				c.stripped.WriteString(stripANSI(string(pending)))
+				c.stripped.WriteString(s)
 				c.mu.Unlock()
 			}
 			return // EIO on close is normal for a PTY
 		}
 	}
+}
+
+// maxPendingEscape bounds how many bytes ansiChunker.pending is allowed to
+// hold back as a possibly-incomplete escape sequence before giving up and
+// flushing it as literal text.
+//
+// Real CSI sequences (cursor movement, SGR colour codes) run well under 32
+// bytes even with several numeric parameters. Real OSC sequences for a
+// window title or a hyperlink (OSC 8) are usually well under a few hundred
+// bytes. The one realistic outlier is OSC 52 (clipboard set/query): its
+// payload is base64-encoded, and github.com/aymanbagabas/go-osc52 is already
+// an indirect dependency of this module (pulled in for bubbletea/huh
+// copy-to-clipboard support), so a live session under test could plausibly
+// emit one for a non-trivial chunk of copied text — comfortably more than a
+// few hundred bytes, but not unbounded. 8KiB gives that real case generous
+// headroom while still bounding a stream of ESC bytes that never resolves
+// into a recognised sequence at all (malformed or adversarial output) from
+// growing pending without limit.
+const maxPendingEscape = 8192
+
+// ansiChunker incrementally strips ANSI escape sequences from a stream of
+// arbitrarily-sized chunks, holding back a possibly-incomplete escape
+// sequence at the end of each chunk so a Read() boundary that lands mid-
+// sequence can't corrupt the stripped output. It is not safe for concurrent
+// use. readLoop owns one exclusively; tests construct their own zero-value
+// ansiChunker to exercise this exact chunking logic — the same code readLoop
+// runs against a live PTY — without needing one.
+type ansiChunker struct {
+	pending []byte
+}
+
+// feed strips as much of chunk (plus any bytes carried over from previous
+// feed calls) as is currently safe, and returns it. See splitTrailingEscape
+// for what "safe" means and how malformed input is handled.
+func (a *ansiChunker) feed(chunk []byte) string {
+	data := append(a.pending, chunk...)
+	safe, rest := splitTrailingEscape(data)
+	if len(rest) > maxPendingEscape {
+		// Never resolved into a recognised sequence within a generous
+		// bound — stop waiting for a terminator that may never come and
+		// flush the whole thing as literal text instead of holding it
+		// (and everything appended after it) forever.
+		safe, rest = data, nil
+	}
+	a.pending = rest
+	return stripANSI(string(safe))
+}
+
+// flush strips and returns whatever is left in pending. Call this once the
+// stream has ended and no more bytes are coming, so a still-incomplete
+// sequence is rendered as literal text rather than silently dropped.
+func (a *ansiChunker) flush() string {
+	if len(a.pending) == 0 {
+		return ""
+	}
+	s := stripANSI(string(a.pending))
+	a.pending = nil
+	return s
 }
 
 // splitTrailingEscape separates data into a safe-to-strip prefix and a
@@ -129,12 +184,29 @@ func (c *Console) readLoop() {
 // isolation would let the truncated half leak into the stripped buffer as
 // literal bytes, corrupting the exact buffer Expect/Screen assert against.
 //
-// data's last ESC (0x1b) byte is used as the candidate cut point: if what
-// follows it is already a complete, recognised escape sequence, everything
-// is safe to strip (anything after a complete match is guaranteed plain text,
-// since we picked the *last* ESC in data). Otherwise the sequence is still
-// accumulating bytes, so everything from that ESC onward is held back for the
-// next call.
+// data's last ESC (0x1b) byte is the pivot: if what follows it is already a
+// complete, recognised escape sequence, everything is safe to strip —
+// anything after a complete match is guaranteed plain text, since it's the
+// *last* ESC in data. Otherwise the sequence starting at that ESC is still
+// accumulating bytes, so everything from it onward is held back for the next
+// call while everything before it (the prefix) is stripped and released
+// immediately.
+//
+// That prefix-release is exact for well-formed input: nothing before the
+// pivot ESC can itself be an incomplete sequence, because if it were, *it*
+// would be the last ESC, not the one we picked. It is intentionally
+// terminal-accurate, not "safe", for malformed input: if an incomplete
+// sequence is immediately followed by bytes that happen to complete a
+// *different* valid sequence once concatenated (e.g. holding back "\x1b[3"
+// and then receiving "randomtext" — "\x1b[3r" is a syntactically valid CSI
+// sequence, since 'r' falls in the final-byte range [@-~], and gets stripped
+// along with its leading digit, same as "\x1b[3rANDOMTEXT" would strip the
+// same way if it arrived as one write) — the result matches what a real
+// terminal emulator would render for that same malformed byte stream. That
+// is the desired behaviour for a harness asserting on terminal output: it is
+// not this function's job to second-guess or repair a program that writes
+// syntactically ambiguous escape sequences, only to strip exactly what a
+// terminal would. See TestSplitTrailingEscapeMalformedInputMatchesTerminal.
 func splitTrailingEscape(data []byte) (safe, rest []byte) {
 	i := bytes.LastIndexByte(data, 0x1b)
 	if i < 0 {

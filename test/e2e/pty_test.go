@@ -149,6 +149,151 @@ func TestSplitTrailingEscapeHoldsBackPartialSequence(t *testing.T) {
 	}
 }
 
+// feedAll drives chunks through a fresh ansiChunker — the exact per-chunk
+// pipeline readLoop runs against a live PTY (see readLoop in pty.go) — and
+// returns the fully reassembled stripped output, including the final
+// flush(). Test helpers call this instead of reimplementing readLoop's
+// pending/splitTrailingEscape/stripANSI wiring, so what's under test is
+// production code, not a copy of it.
+func feedAll(chunks ...[]byte) string {
+	var chunker ansiChunker
+	var sb strings.Builder
+	for _, c := range chunks {
+		sb.WriteString(chunker.feed(c))
+	}
+	sb.WriteString(chunker.flush())
+	return sb.String()
+}
+
+// This is the property that actually matters for readLoop's correctness:
+// wherever the kernel happens to cut a Read() in two, the reassembled
+// stripped output must be identical to what a single unsplit write would
+// produce. It's proven exhaustively — every one of the 32 possible split
+// points in a well-formed, multi-sequence styled string — rather than at one
+// or two hand-picked boundaries, per the review that flagged this suite had
+// no such test despite splitTrailingEscape existing specifically to make
+// this true.
+func TestAnsiChunkerSplitAtEveryByteBoundaryMatchesUnsplit(t *testing.T) {
+	t.Parallel()
+
+	const full = "\x1b[32mgreen\x1b[0m plain \x1b[1mbold\x1b[0m"
+	const want = "green plain bold"
+
+	if got := feedAll([]byte(full)); got != want {
+		t.Fatalf("sanity check (unsplit) = %q, want %q", got, want)
+	}
+
+	for i := 1; i < len(full); i++ {
+		if got := feedAll([]byte(full[:i]), []byte(full[i:])); got != want {
+			t.Errorf("split at byte %d (%q | %q) = %q, want %q",
+				i, full[:i], full[i:], got, want)
+		}
+	}
+}
+
+// A three-way split: the CSI introducer, its parameter, and its final byte
+// each arrive in a separate Read().
+func TestAnsiChunkerThreeWaySplit(t *testing.T) {
+	t.Parallel()
+
+	got := feedAll([]byte("\x1b[3"), []byte("2m"), []byte("hi\x1b[0m"))
+	if want := "hi"; got != want {
+		t.Fatalf("feedAll(three-way split) = %q, want %q", got, want)
+	}
+}
+
+// OSC sequences (window title, hyperlinks) have different terminator rules
+// than CSI: they end on BEL (\a) or ESC-backslash (ST), not a byte in the
+// CSI final-byte range, so splitTrailingEscape's "is the tail already a
+// complete match" check exercises a different branch of ansiRE here. Split
+// at every byte boundary for the same exhaustive-coverage reason as the CSI
+// case above.
+func TestAnsiChunkerSplitInsideOSCSequence(t *testing.T) {
+	t.Parallel()
+
+	const full = "before\x1b]0;window title\aafter"
+	const want = "beforeafter"
+
+	if got := feedAll([]byte(full)); got != want {
+		t.Fatalf("sanity check (unsplit) = %q, want %q", got, want)
+	}
+
+	for i := 1; i < len(full); i++ {
+		if got := feedAll([]byte(full[:i]), []byte(full[i:])); got != want {
+			t.Errorf("split at byte %d (%q | %q) = %q, want %q",
+				i, full[:i], full[i:], got, want)
+		}
+	}
+}
+
+// Pins the documented malformed-input behaviour from splitTrailingEscape's
+// doc comment: an incomplete sequence held back across a chunk boundary,
+// followed by bytes that happen to complete a *different* valid sequence
+// once concatenated, strips exactly as a real terminal would — not as if
+// the two chunks had never been split. "\x1b[3" held back, then "randomtext"
+// arrives: "\x1b[3r" is a syntactically complete CSI sequence ('r' is a
+// valid CSI final byte), so it strips along with the leading digit, and the
+// output loses that leading 'r'. This is deliberate, not a bug: it matches
+// what stripANSI would produce for the identical bytes written as a single
+// unsplit chunk (asserted directly below), which is in turn what a real
+// terminal renders for this exact — genuinely ambiguous — byte sequence.
+func TestSplitTrailingEscapeMalformedInputMatchesTerminal(t *testing.T) {
+	t.Parallel()
+
+	const whole = "\x1b[3" + "randomtext"
+	want := stripANSI(whole)
+	if want != "andomtext" {
+		t.Fatalf("precondition failed: stripANSI(%q) = %q, want %q (has the shared ansiRE pattern changed?)",
+			whole, want, "andomtext")
+	}
+
+	if got := feedAll([]byte("\x1b[3"), []byte("randomtext")); got != want {
+		t.Fatalf("feedAll(split) = %q, want %q (stripANSI applied to the same bytes unsplit)", got, want)
+	}
+}
+
+// ansiChunker.pending must not grow without bound for a sequence that never
+// resolves into a recognised escape sequence at all (malformed or
+// adversarial output, as opposed to the ordinary "still mid-sequence,
+// more bytes are coming shortly" case the other tests above cover). This
+// feeds an OSC opener with no terminator ever arriving, in small increments,
+// well past maxPendingEscape, and asserts pending is capped and eventually
+// flushed as literal text rather than held forever.
+func TestAnsiChunkerBoundsPendingBuffer(t *testing.T) {
+	t.Parallel()
+
+	var chunker ansiChunker
+	// Opens an OSC sequence; every subsequent feed keeps appending payload
+	// bytes with no BEL/ST terminator, so the "last ESC in data" stays
+	// pinned at this opener throughout and pending grows monotonically —
+	// exactly the shape of input the bound exists to catch.
+	if out := chunker.feed([]byte("\x1b]0;")); out != "" {
+		t.Fatalf("feed(OSC opener) = %q, want empty (nothing safe to strip yet)", out)
+	}
+
+	const step = 200
+	payload := strings.Repeat("x", step)
+
+	flushed := false
+	for i := 0; i < (maxPendingEscape/step)+10; i++ {
+		out := chunker.feed([]byte(payload))
+		if len(chunker.pending) > maxPendingEscape {
+			t.Fatalf("iteration %d: pending = %d bytes, exceeds the %d-byte bound",
+				i, len(chunker.pending), maxPendingEscape)
+		}
+		if out != "" {
+			flushed = true
+			if !strings.Contains(out, payload) {
+				t.Fatalf("iteration %d: flushed output %q does not contain the literal payload %q",
+					i, out, payload)
+			}
+		}
+	}
+	if !flushed {
+		t.Fatal("pending was never flushed — this test never actually exercised the bound")
+	}
+}
+
 // This is the regression test for the Screen()/dump() data race: readLoop
 // mutates the shared strings.Builders while a still-running child keeps
 // producing output, and c.Screen()/c.dump() must be safe to call
