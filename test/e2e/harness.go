@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ntalmon/aka/internal/aliases"
+	"github.com/ntalmon/aka/test/e2e/fakellm"
 )
 
 // Env is one isolated aka installation: a throwaway $HOME plus helpers to seed
@@ -26,6 +27,7 @@ type Env struct {
 	t        *testing.T
 	Home     string
 	Shell    string // "zsh" or "bash"
+	LLM      *fakellm.Server
 	extraEnv []string
 }
 
@@ -35,7 +37,10 @@ func NewEnv(t *testing.T, shell string) *Env {
 	if shell != "zsh" && shell != "bash" {
 		t.Fatalf("unsupported shell %q", shell)
 	}
-	return &Env{t: t, Home: t.TempDir(), Shell: shell}
+	e := &Env{t: t, Home: t.TempDir(), Shell: shell}
+	e.LLM = fakellm.New(t)
+	e.SetEnv("AKA_LLM_BASE_URL=" + e.LLM.URL())
+	return e
 }
 
 // SetEnv adds variables to every subsequent aka invocation.
