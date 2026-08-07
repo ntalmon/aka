@@ -59,12 +59,28 @@ type Console struct {
 	exitCode int
 }
 
+// consoleRows/consoleCols size every PTY this harness opens. pty.Start (used
+// by earlier, non-interactive-only tests) leaves the kernel's default winsize
+// in place, which is 0x0 until something calls TIOCSWINSZ. bubbletea/huh
+// compute their viewport height from the reported window size, so a 0-height
+// terminal renders only whatever chrome doesn't depend on that computed
+// height (e.g. a form's fixed footer hint) and silently clips everything
+// else — title, options, the lot. That surfaced as real interactive prompts
+// (huh.Form-driven flows like the first-run API key setup) rendering just a
+// footer and then sitting there until Expect times out, with no indication
+// anything was wrong short of reading termenv/bubbletea internals. A real
+// terminal always reports a size, so give every Console one too.
+const (
+	consoleRows = 40
+	consoleCols = 200
+)
+
 // newConsole starts cmd attached to a PTY and streams its output into the
 // console buffers. The process is killed at test cleanup if still running.
 func newConsole(t *testing.T, cmd *exec.Cmd) *Console {
 	t.Helper()
 
-	ptmx, err := pty.Start(cmd)
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: consoleRows, Cols: consoleCols})
 	if err != nil {
 		t.Fatalf("start %v under pty: %v", cmd.Args, err)
 	}
