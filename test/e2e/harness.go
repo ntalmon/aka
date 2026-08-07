@@ -48,6 +48,18 @@ func (e *Env) SetEnv(kv ...string) {
 	e.extraEnv = append(e.extraEnv, kv...)
 }
 
+// ClearLLMOverride removes AKA_LLM_BASE_URL so requests go to the real
+// provider endpoint. Used only by the live tier.
+func (e *Env) ClearLLMOverride() {
+	filtered := e.extraEnv[:0]
+	for _, kv := range e.extraEnv {
+		if !strings.HasPrefix(kv, "AKA_LLM_BASE_URL=") {
+			filtered = append(filtered, kv)
+		}
+	}
+	e.extraEnv = filtered
+}
+
 // ConfigTOML is the subset of config.toml the tests seed.
 type ConfigTOML struct {
 	Provider string

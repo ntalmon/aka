@@ -15,6 +15,8 @@ gofmt -w .                             # format
 go vet ./...                           # vet
 go run ./cmd/aka -- <args>             # run without installing
 go install ./cmd/aka                   # install `aka` binary to $GOPATH/bin
+make e2e                                # run the end-to-end suite in Docker
+AKA_E2E_LIVE=1 ANTHROPIC_API_KEY=... make e2e   # include the live provider tier
 ```
 
 CI additionally runs `golangci-lint` — run it locally if adding new packages or exported symbols.
@@ -36,7 +38,9 @@ Each step is a thin wrapper over its `internal/` package. The cobra subcommand i
 
 ### Key invariant: `aliases.sh` is never appended to
 
-`internal/aliases/WriteAliasesFile()` always does a **full rewrite** from `installed.json`, sorted by name, with a timestamped backup taken first. `apply.Apply()` and `aka delete` both go through this function. Never write to `aliases.sh` directly.
+`internal/aliases/WriteAliasesFile()` always does a **full rewrite** from `installed.json`, sorted by name. `apply.Apply()` and `aka delete` both go through this function. Never write to `aliases.sh` directly.
+
+**No backup/recovery path exists.** Commit `e23930d` deleted `aliases.BackupDir()`/`Backup()` and the rc-file backup call; there is currently no snapshot taken before `WriteAliasesFile()` overwrites `aliases.sh`, before `aka scan`'s apply step, or before `aka delete`. A bad write or accidental delete cannot be recovered from backups — none are taken.
 
 ### Runtime files
 
@@ -48,7 +52,7 @@ Per-shell files live under `~/.config/aka/<shell>/` (e.g. `~/.config/aka/zsh/`):
 | `installed.json` | Source of truth — `InstalledEntry` records with metadata |
 | `history_cursor.json` | Tracks last-seen history position |
 | `completion.sh` | Generated tab-completion script |
-| `backups/` | Timestamped snapshots before every write |
+| `backups/` | Unused — no code currently writes here (see below) |
 
 Global (not per-shell):
 
@@ -113,13 +117,32 @@ Supported providers and their model lists live in `internal/llm/models.go` (`Sup
 
 `aka delete <name>` removes a single AKA-managed alias or function by name. It detects the current shell via `detectCurrentShell()`, confirms the entry exists in `installed.json`, shows `[y/N]` confirmation, then calls `WriteAliasesFile` and `SaveInstalled` to atomically remove it. The shell wrapper auto-reloads `aliases.sh` after a successful `delete` (same as after `scan`).
 
+### End-to-end tests (`test/e2e/`)
+
+Behind the `e2e` build tag, so `go test ./...` never runs them. `make e2e` builds
+`Dockerfile.e2e` and runs the suite inside the container, where `TestMain` builds
+and installs the real binary to `/usr/local/bin/aka`. Each test gets a throwaway
+`$HOME` and its own `fakellm` server; interactive flows are driven over a real PTY
+(`test/e2e/pty.go`). `AKA_LLM_BASE_URL` (loopback-only, see
+`internal/llm/baseurl.go`) is what points the real binary at the local server.
+
+The suite refuses to run outside the container — it installs to `/usr/local/bin`
+and would otherwise overwrite a developer's real `aka`.
+
+An opt-in live tier (`test/e2e/live_test.go`) talks to the real Anthropic API
+instead of `fakellm`, gated on `AKA_E2E_LIVE=1` and a real `ANTHROPIC_API_KEY`;
+it is skipped by default and CI never sets `AKA_E2E_LIVE`, so it only runs when
+invoked locally.
+
 ### Shell detection helpers (`internal/cli/shell.go`)
 
 Shared utilities used by `list`, `delete`, and other commands:
 - `detectCurrentShell()` — reads `$AKA_SHELL` first (set by the shell wrapper injected by `aka init`), falls back to parsing `$SHELL`. This is the canonical way to know which shell's data to read.
 - `requireShellInitialized(shell)` — checks that `~/.config/aka/<shell>/` exists; prints a friendly message and returns false if not. Callers should return nil when this returns false.
 
-### `aka uninit`
+### `aka uninit` (planned, not implemented)
+
+**Not registered as a command.** `cmd/aka/main.go` only registers `init`, `scan`, `config`, `list`, and `delete` — there is no `uninit` subcommand today. The description below documents the intended design for when it is built, not current behavior:
 
 Removes everything `aka init` added: strips the `aka()` wrapper, `aliases.sh` source line, and `completion.sh` source line from the shell RC file (matched by regex, robust to ordering), then deletes `~/.config/aka/` entirely. Shows a summary of what will be removed and asks a single `[y/N]` prompt before acting. The binary itself is not removed.
 
