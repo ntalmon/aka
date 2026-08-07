@@ -97,19 +97,38 @@ machine.
 
 ---
 
-## 6. Process & runtime hygiene
+## 6. LLM endpoint override (`AKA_LLM_BASE_URL`)
 
-| # | Severity | Check | Where |
-|---|----|----|----|
-| 6.1 | **M** | `exec.Command` invocations have an explicit `argv` and never pass user-controlled strings into `sh -c "…"`. Current single offender is `NameExistsInShell` (see 1.2). Grep `exec.Command\("sh"` and `exec.Command\(".*-c"`. | [internal/apply/apply.go:25](internal/apply/apply.go#L25), repo-wide |
-| 6.2 | **M** | `$EDITOR` invocation in `ui.ReviewCensored` resolves via `exec.LookPath`, runs with current env (no PATH override), and on failure does not fall through to "send anyway". | [internal/ui/ui.go](internal/ui/ui.go) |
-| 6.3 | **L** | All HTTP clients set a finite `Timeout` (Anthropic uses 120s — confirm Groq/OpenAI/Gemini/Ollama too). | [internal/llm/](internal/llm/) |
-| 6.4 | **L** | Context cancellation is honored (`http.NewRequestWithContext`) so a Ctrl-C during a request actually aborts it. Currently true for Anthropic — verify other providers. | [internal/llm/](internal/llm/) |
-| 6.5 | **L** | `aka` has no unexpected outbound calls. Run `aka scan --dry-run` under `lsof`/`tcpdump` and confirm zero network. | manual |
+**Boundary:** an environment variable influences the destination of HTTP requests
+that carry the user's API key in the `X-API-Key` / `Authorization` header.
+
+**Mitigation:** `internal/llm/baseurl.go` honours the variable only when the host
+is a loopback *literal* (`127.0.0.0/8`, `::1`, or the exact string `localhost`).
+No DNS resolution is performed, so a hostname that merely resolves to loopback is
+refused. Non-loopback, unparseable, and relative values are ignored with a warning
+on stderr; the default endpoint is used instead.
+
+**Checklist:**
+- [ ] `AKA_LLM_BASE_URL=https://attacker.example` is refused, warns, and the request
+      still goes to the real provider.
+- [ ] A hostname resolving to 127.0.0.1 is refused (literal check, not resolution).
+- [ ] The variable cannot cause the key to be sent off-host.
 
 ---
 
-## 7. Static & dynamic analysis tooling
+## 7. Process & runtime hygiene
+
+| # | Severity | Check | Where |
+|---|----|----|----|
+| 7.1 | **M** | `exec.Command` invocations have an explicit `argv` and never pass user-controlled strings into `sh -c "…"`. Current single offender is `NameExistsInShell` (see 1.2). Grep `exec.Command\("sh"` and `exec.Command\(".*-c"`. | [internal/apply/apply.go:25](internal/apply/apply.go#L25), repo-wide |
+| 7.2 | **M** | `$EDITOR` invocation in `ui.ReviewCensored` resolves via `exec.LookPath`, runs with current env (no PATH override), and on failure does not fall through to "send anyway". | [internal/ui/ui.go](internal/ui/ui.go) |
+| 7.3 | **L** | All HTTP clients set a finite `Timeout` (Anthropic uses 120s — confirm Groq/OpenAI/Gemini/Ollama too). | [internal/llm/](internal/llm/) |
+| 7.4 | **L** | Context cancellation is honored (`http.NewRequestWithContext`) so a Ctrl-C during a request actually aborts it. Currently true for Anthropic — verify other providers. | [internal/llm/](internal/llm/) |
+| 7.5 | **L** | `aka` has no unexpected outbound calls. Run `aka scan --dry-run` under `lsof`/`tcpdump` and confirm zero network. | manual |
+
+---
+
+## 8. Static & dynamic analysis tooling
 
 Run these as part of the audit; failures are findings.
 
@@ -134,7 +153,7 @@ Dynamic:
 
 ---
 
-## 8. Findings index (filled in per-run)
+## 9. Findings index (filled in per-run)
 
 For each check above that fails:
 
