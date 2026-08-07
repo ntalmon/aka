@@ -24,9 +24,9 @@ func TestScanCommand_NetworkFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create zsh dir: %v", err)
 	}
-	os.WriteFile(filepath.Join(configDir, "zsh", "aliases.sh"), []byte(""), 0644)
-	os.WriteFile(filepath.Join(configDir, "zsh", "completion.sh"), []byte(""), 0644)
-	os.WriteFile(filepath.Join(homeDir, ".zsh_history"), []byte("ls -la\necho hello\n"), 0644)
+	_ = os.WriteFile(filepath.Join(configDir, "zsh", "aliases.sh"), []byte(""), 0644)
+	_ = os.WriteFile(filepath.Join(configDir, "zsh", "completion.sh"), []byte(""), 0644)
+	_ = os.WriteFile(filepath.Join(homeDir, ".zsh_history"), []byte("ls -la\necho hello\n"), 0644)
 
 	configContent := `provider = "anthropic"
 anthropic_api_key = "dummy-key-that-will-fail"
@@ -53,19 +53,19 @@ anthropic_api_key = "dummy-key-that-will-fail"
 	}
 
 	// Expect the prompt and send enter (carriage return for bubbletea)
-	c.ExpectString("How much history")
+	_, _ = c.ExpectString("How much history")
 	time.Sleep(1 * time.Second)
-	c.Send("\r")
+	_, _ = c.Send("\r")
 
 	// Second confirmation prompt
-	c.ExpectString("Send 2 commands to the LLM?")
+	_, _ = c.ExpectString("Send 2 commands to the LLM?")
 	time.Sleep(1 * time.Second)
-	c.Send("\r")
+	_, _ = c.Send("\r")
 
 	// Wait for the failure message
 	// Output should contain something about invalid API key or network failure
 	out, err := c.Expect(expect.EOF, expect.WithTimeout(5*time.Second))
-	
+
 	if err == nil {
 		t.Errorf("expected timeout or EOF from cmd, got none")
 	}

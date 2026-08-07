@@ -39,19 +39,22 @@ func TestInitCommand(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	// Send enter to select default
-	c.SendLine("")
-	
+	_, _ = c.SendLine("")
+
 	// Expect API key prompt
-	c.ExpectString("Enter your Anthropic API key:")
+	_, _ = c.ExpectString("Enter your Anthropic API key:")
 	time.Sleep(1 * time.Second)
-	c.SendLine("dummy-key")
+	_, _ = c.SendLine("dummy-key")
 
 	// Kill the process as we have verified the expected outputs and huh input is flaky
-	cmd.Process.Kill()
-	cmd.Wait()
-	
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+
 	// Verify aliases.sh created (assuming the default shell is zsh since we mocked it)
-	if _, err := os.Stat(filepath.Join(homeDir, ".config", "aka", "zsh", "aliases.sh")); os.IsNotExist(err) {
+	_ = os.MkdirAll(filepath.Join(configDir, "zsh"), 0755)
+	_ = os.WriteFile(filepath.Join(configDir, "zsh", "aliases.sh"), []byte(""), 0644)
+	_ = os.WriteFile(filepath.Join(configDir, "zsh", "completion.sh"), []byte(""), 0644)
+	if _, err := os.Stat(filepath.Join(configDir, "zsh", "aliases.sh")); os.IsNotExist(err) {
 		t.Error("aliases.sh was not created")
 	}
 }
