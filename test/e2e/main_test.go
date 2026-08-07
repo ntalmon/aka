@@ -56,7 +56,11 @@ func TestMain(m *testing.M) {
 func buildAndInstall() error {
 	tmp := filepath.Join(os.TempDir(), "aka-e2e-build")
 
-	build := exec.Command("go", "build", "-o", tmp, "./cmd/aka")
+	// -buildvcs=false: the repo is bind-mounted into the container, and on CI the
+	// checkout is owned by the runner user while the container runs as root. Go's
+	// VCS stamping shells out to git, which refuses with "dubious ownership"
+	// (exit 128) and fails the build. The stamp is meaningless for a test binary.
+	build := exec.Command("go", "build", "-buildvcs=false", "-o", tmp, "./cmd/aka")
 	build.Dir = repoRoot()
 	build.Stdout = os.Stderr
 	build.Stderr = os.Stderr
