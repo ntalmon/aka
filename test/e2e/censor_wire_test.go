@@ -11,14 +11,38 @@ import (
 )
 
 // secretLiterals are values that must never reach the LLM. Each is paired with
-// the history command that contains it.
+// the history command that contains it. All four are caught today by
+// internal/censor/censor.go's Pass 1 regex pack or entropy heuristic — this
+// set is deliberately strict and must keep passing.
+//
+// Two values that were originally asserted here were removed after product
+// review (see task-9-report.md addendum for the full ruling):
+//
+//   - A bare IP address (10.1.2.3, from `ssh deploy@10.1.2.3`) is not a
+//     secret-detection case at all. Pass 2 (ParameterizeVars) only masks IPs
+//     as a side effect of parameterizing *repeated* structural values — it
+//     was never a secret-redaction rule, so an unmasked one-off IP is working
+//     as designed, not a gap. There is intentionally no assertion for it
+//     anywhere in this file.
+//   - "hunter2supersecret" (mysql's `-phunter2supersecret` flag, from
+//     `mysql -u admin -phunter2supersecret -h db.internal`) is a real censor
+//     gap the product owner has chosen not to fix yet. It is pinned on its
+//     own in TestKnownCensorGapPasswordFlagWithoutEquals below instead of
+//     living here, so this test documents only currently-guaranteed
+//     behaviour and stays green.
 var secretLiterals = map[string]string{
 	"AKIAIOSFODNN7EXAMPLE":                   `aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE`,
 	"ghp_1234567890abcdefghijklmnopqrstuvwx": `git remote set-url origin https://ghp_1234567890abcdefghijklmnopqrstuvwx@github.com/o/r.git`,
 	"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U": `curl -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U" https://api.example.com/v1/data`,
 	"sk-ant-api03-SECRETVALUE1234567890abcdefXYZ":                                                                  "export ANTHROPIC_API_KEY=sk-ant-api03-SECRETVALUE1234567890abcdefXYZ",
-	"hunter2supersecret": `mysql -u admin -phunter2supersecret -h db.internal`,
 }
+
+// mysqlPasswordFlagCmd is the known-uncensored command used by
+// TestKnownCensorGapPasswordFlagWithoutEquals. It lives in secretHistory's
+// fixed prefix (like the ssh/curl/git commands) rather than in
+// secretLiterals, since it must appear in history without being covered by
+// TestSecretsNeverReachTheWire's strict loop.
+const mysqlPasswordFlagCmd = `mysql -u admin -phunter2supersecret -h db.internal`
 
 // secretHistory builds a history containing every secret plus enough ordinary
 // commands that the scan proceeds normally (full history is sent in one shot
@@ -31,6 +55,7 @@ func secretHistory() []string {
 		"curl https://admin:s3cr3tpassw0rd@internal.example.com/health",
 		"git commit -m 'fix the login redirect'",
 		"git log --oneline -5",
+		mysqlPasswordFlagCmd,
 	}
 	for _, cmd := range secretLiterals {
 		cmds = append(cmds, cmd)
@@ -55,33 +80,14 @@ func censorEnv(t *testing.T) *Env {
 // The strongest form of the censor test: assert on the bytes that actually
 // crossed the socket, not on a function's return value.
 //
-// REAL SECURITY FINDING — this test is intentionally left failing. Two of the
-// values it asserts against genuinely reach the wire under `--censor trust`,
-// confirmed by writing the raw recorded request body to disk and inspecting
-// it (see task-9-report.md for the full byte-for-byte dump):
-//
-//  1. "10.1.2.3" from `ssh deploy@10.1.2.3`. internal/censor/censor.go only
-//     masks IP addresses in Pass 2 (ParameterizeVars), and Pass 2 only
-//     parameterizes a positional slot when the same (binary+flags) shape
-//     appears with ≥2 *distinct* values in the batch (see the `len(vals) < 2`
-//     guard in ParameterizeVars). secretHistory's history has exactly one
-//     `ssh ...` command, so the slot never clusters and the IP is never
-//     replaced — it is sent to the LLM completely unmasked. Any one-off IP
-//     address (or hostname, or any other Pass-2-typed value) with no repeat
-//     in the same session's history bypasses masking entirely.
-//  2. "hunter2supersecret" from `mysql -u admin -phunter2supersecret -h
-//     db.internal`. This is a real, if awkward, secret-bearing shell idiom:
-//     mysql's `-p<password>` (no space, no `=`) concatenated flag. Pass 1's
-//     regex pack has no pattern for it (the `(password|passwd|pass|pwd)=`
-//     pattern requires a literal `=`), and it doesn't qualify for the
-//     entropy heuristic either: isLikelySecret requires len(s) >= 20, and
-//     "hunter2supersecret" is 18 characters — short enough to slip under
-//     that floor despite being an obviously real secret.
-//
-// Per this task's explicit instructions: do not weaken this assertion to
-// make it pass, and do not "fix" internal/censor/censor.go to match the
-// test (that decision belongs to a human, and is a product change, not a
-// test change). This is reported loudly in the task report instead.
+// This asserts the strict set only: the AWS key, GitHub token, JWT,
+// Anthropic key (all regex/entropy catches in Pass 1), and the URL-embedded
+// password from the https://admin:s3cr3tpassw0rd@... credential. All five
+// are caught deterministically today and must keep being caught — do not
+// soften any of these checks. See the doc comment on secretLiterals above
+// for why a bare IP address is deliberately not asserted here, and
+// TestKnownCensorGapPasswordFlagWithoutEquals below for the one known gap
+// that is pinned separately rather than failing this test.
 func TestSecretsNeverReachTheWire(t *testing.T) {
 	t.Parallel()
 
@@ -103,10 +109,55 @@ func TestSecretsNeverReachTheWire(t *testing.T) {
 			t.Errorf("secret %q was sent to the LLM", secret)
 		}
 	}
-	for _, secret := range []string{"s3cr3tpassw0rd", "10.1.2.3"} {
-		if strings.Contains(body, secret) {
-			t.Errorf("sensitive value %q was sent to the LLM", secret)
-		}
+	if strings.Contains(body, "s3cr3tpassw0rd") {
+		t.Error(`sensitive value "s3cr3tpassw0rd" was sent to the LLM`)
+	}
+}
+
+// TestKnownCensorGapPasswordFlagWithoutEquals pins a real, currently
+// unfixed censor gap: mysql's `-p<password>` flag syntax (no space, no `=`)
+// is not caught by either censor pass, so the raw password reaches the LLM
+// under `--censor trust`.
+//
+//   - Pass 1's password regex is `(?i)(password|passwd|pass|pwd)=\S+`
+//     (internal/censor/censor.go) — it requires a literal `=` between the
+//     keyword and the value. mysql's `-phunter2supersecret` has no
+//     separator at all, so the regex never matches.
+//   - Pass 1's entropy heuristic (isLikelySecret) requires len(s) >= 20
+//     before it even computes Shannon entropy. "hunter2supersecret" is 18
+//     characters, so it never reaches the entropy check regardless of how
+//     high its entropy would score.
+//
+// So the value passes both passes untouched and is sent to the LLM in the
+// clear. This is a real finding, reported to and reviewed by the product
+// owner, who has chosen NOT to fix it for now — this test documents that
+// decision, it does not endorse the behaviour. It intentionally asserts the
+// leak (rather than the absence of one) so that if someone later closes this
+// gap in internal/censor/censor.go, this test starts failing loudly instead
+// of silently going stale. When that happens, deleting this test (and
+// folding the mysql command into TestSecretsNeverReachTheWire's strict set
+// instead) is the correct response — do not "fix" this test to keep passing
+// against improved censoring.
+func TestKnownCensorGapPasswordFlagWithoutEquals(t *testing.T) {
+	t.Parallel()
+
+	env := censorEnv(t)
+
+	c := env.Spawn("scan", "--history", "full", "--censor", "trust")
+	c.Expect("AKA FOUND")
+	c.Send(CtrlC)
+	_ = c.Wait()
+
+	reqs := env.LLM.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("no request reached the server")
+	}
+	body := string(reqs[0].Body)
+
+	if !strings.Contains(body, "hunter2supersecret") {
+		t.Error("known gap appears to be fixed: \"hunter2supersecret\" no longer reached the LLM. " +
+			"If internal/censor/censor.go now catches mysql's -p<password> flag syntax, delete this test " +
+			"and add mysqlPasswordFlagCmd's secret to TestSecretsNeverReachTheWire's strict set instead.")
 	}
 }
 
