@@ -1,0 +1,13 @@
+# Image for the aka end-to-end suite. The repo is mounted at /src at run time;
+# nothing is copied in, so a rebuild is only needed when this file changes.
+FROM golang:1.26
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        zsh \
+        git \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src

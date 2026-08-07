@@ -10,10 +10,10 @@ pre-push:
         fi
 
     go-vet:
-      run: go vet ./...
+      run: go vet -tags e2e ./...
 
     golangci-lint:
-      run: golangci-lint run --timeout=5m
+      run: golangci-lint run --build-tags e2e --timeout=5m
 
     govulncheck:
       run: |

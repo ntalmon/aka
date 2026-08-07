@@ -173,7 +173,8 @@ func migrateFromLegacy(shell string) error {
 }
 
 // Init creates the per-shell aliases file and appends the shell wrapper and source
-// line to rcFile, idempotently. It takes a backup of rcFile before modifying it.
+// line to rcFile, idempotently. It does not take a backup of rcFile before
+// modifying it — no backup/recovery path currently exists (see CLAUDE.md).
 // If legacy data exists in ~/.config/aka/ it is migrated to ~/.config/aka/<shell>/.
 func Init(rcFile, shell string) error {
 	dir, err := shellDir(shell)

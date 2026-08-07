@@ -29,7 +29,7 @@ type OpenAICompatProvider struct {
 
 func newOpenAICompat(apiURL, apiKey, model string) *OpenAICompatProvider {
 	return &OpenAICompatProvider{
-		apiURL: apiURL,
+		apiURL: resolveBaseURL(apiURL),
 		apiKey: apiKey,
 		model:  model,
 		client: &http.Client{Timeout: 120 * time.Second},
@@ -40,6 +40,16 @@ func newOpenAICompat(apiURL, apiKey, model string) *OpenAICompatProvider {
 func (p *OpenAICompatProvider) WithModel(model string) *OpenAICompatProvider {
 	cp := *p
 	cp.model = model
+	return &cp
+}
+
+// WithBaseURL returns a shallow copy whose requests go to base, preserving the
+// provider's own API path. An invalid base is ignored.
+func (p *OpenAICompatProvider) WithBaseURL(base string) *OpenAICompatProvider {
+	cp := *p
+	if resolved, err := replaceBase(cp.apiURL, base); err == nil {
+		cp.apiURL = resolved
+	}
 	return &cp
 }
 

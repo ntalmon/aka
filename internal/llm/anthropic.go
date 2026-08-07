@@ -22,6 +22,7 @@ const (
 // AnthropicProvider implements Provider using the Anthropic Messages API.
 type AnthropicProvider struct {
 	apiKey string
+	apiURL string
 	model  string
 	client *http.Client
 }
@@ -30,6 +31,7 @@ type AnthropicProvider struct {
 func New(apiKey string) *AnthropicProvider {
 	return &AnthropicProvider{
 		apiKey: apiKey,
+		apiURL: resolveBaseURL(anthropicAPI),
 		model:  defaultModel,
 		client: &http.Client{Timeout: 120 * time.Second},
 	}
@@ -39,6 +41,16 @@ func New(apiKey string) *AnthropicProvider {
 func (a *AnthropicProvider) WithModel(model string) *AnthropicProvider {
 	a.model = model
 	return a
+}
+
+// WithBaseURL returns a shallow copy whose requests go to base, preserving the
+// Anthropic API path. An invalid base is ignored.
+func (a *AnthropicProvider) WithBaseURL(base string) *AnthropicProvider {
+	cp := *a
+	if resolved, err := replaceBase(cp.apiURL, base); err == nil {
+		cp.apiURL = resolved
+	}
+	return &cp
 }
 
 // anthropicRequest is the payload sent to the Anthropic API.
@@ -173,7 +185,7 @@ func (a *AnthropicProvider) Suggest(ctx context.Context, censored []history.Entr
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicAPI, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.apiURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
