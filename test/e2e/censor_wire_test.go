@@ -198,15 +198,19 @@ func TestKnownCensorGapPasswordFlagWithoutEquals(t *testing.T) {
 // placeholderRE matches the real placeholder format emitted by
 // internal/censor/censor.go: "<LABEL_n>" where LABEL is one of the fixed
 // tokens CensorSecrets/ParameterizeVars produce (TOKEN, PASSWORD, URL_CREDS,
-// SECRET from pass 1; HOST, VAR from pass 2). PATH and IP are included in the
-// alternation below for completeness with inferVarType's full label set, but
-// neither is ever actually emitted as a placeholder: ParameterizeVars's
+// SECRET from pass 1; HOST, IP, VAR from pass 2). IP is included in the
+// alternation below for completeness with inferVarType's full label set, even
+// though it is never actually emitted as a placeholder: ParameterizeVars's
 // per-slot loop skips `peekTyp == "PATH" || peekTyp == "PORT" ||
 // peekTyp == "IP"` unconditionally, before a placeholder is ever assigned —
 // this is not conditional on repetition/clustering, IPs (and paths, and
 // ports) are excluded outright regardless of how many distinct or repeated
-// occurrences appear in a batch. See secretLiterals's doc comment above for
-// the same point, with the corroborating unit test reference. The brief's
+// occurrences appear in a batch. PATH and PORT are excluded the same way, but
+// unlike IP they are not part of this alternation at all — this regex only
+// needs to guard against labels it could plausibly match, and neither PATH
+// nor PORT is ever assigned to a placeholder in the first place. See
+// secretLiterals's doc comment above for the same IP point, with the
+// corroborating unit test reference. The brief's
 // original assertion only checked for the presence of "<" and ">" anywhere
 // in the body, which would also match template syntax or incidental angle
 // brackets in an unrelated JSON field; this tightens it to the actual

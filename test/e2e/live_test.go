@@ -54,6 +54,20 @@ func TestLiveProviderReturnsUsableSuggestions(t *testing.T) {
 	c.ExpectRe(`Applied \d+ alias\(es\)/function\(s\)!|No suggestions accepted\.`)
 	_ = c.Wait()
 
+	// If ClearLLMOverride ever silently failed to remove AKA_LLM_BASE_URL (a
+	// typo'd prefix, a future refactor of extraEnv, an aliasing bug), this scan
+	// would silently hit the local fakellm server instead of the real
+	// Anthropic API. fakellm's canned suggestions already satisfy validNameRE
+	// and have non-empty templates by construction, so the checks below would
+	// pass even though the test never left localhost — a live tier that
+	// "passes" without ever calling the real provider is the exact silent
+	// failure this tier exists to catch. Zero requests to the loopback server
+	// is the one observable signature that the override really took effect;
+	// do not delete this as redundant with the checks below.
+	if n := len(env.LLM.Requests()); n != 0 {
+		t.Fatalf("scan sent %d request(s) to the local fakellm server — ClearLLMOverride did not take effect, so this test validated canned fake data instead of the real Anthropic API", n)
+	}
+
 	for _, entry := range env.Installed() {
 		if !validNameRE.MatchString(entry.Name) {
 			t.Errorf("live provider produced an unsafe name %q that was installed", entry.Name)
