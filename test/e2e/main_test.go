@@ -20,6 +20,20 @@ const akaBin = "/usr/local/bin/aka"
 // would overwrite their real aka binary.
 const containerGuardEnv = "AKA_E2E_INSIDE_CONTAINER"
 
+// dumpRaceHelperEnv is the same env var TestExpectTimeoutDumpIsRaceFree (in
+// pty_test.go) sets when it re-execs this test binary as a subprocess to
+// exercise TestHelperExpectTimesOutWhileWriting. That re-exec propagates the
+// parent's full environment (os.Environ()), which includes
+// AKA_E2E_INSIDE_CONTAINER=1 — so without this guard, the subprocess's own
+// TestMain would run buildAndInstall() again, which does
+// `install -m 755 ... /usr/local/bin/aka` while up to ~50 t.Parallel() tests
+// in the parent process are concurrently exec'ing that exact path. That is a
+// real window for a random, unreproducible "text file busy" or truncated-
+// binary failure. The subprocess only needs the already-installed binary
+// (it never invokes `aka` itself, it just spawns `sh` under a PTY), so
+// skipping the reinstall is safe.
+const dumpRaceHelperEnv = "AKA_E2E_DUMP_RACE_HELPER"
+
 func TestMain(m *testing.M) {
 	if os.Getenv(containerGuardEnv) != "1" {
 		fmt.Fprintf(os.Stderr,
@@ -28,9 +42,11 @@ func TestMain(m *testing.M) {
 				"Run `make e2e` instead.\n", containerGuardEnv, akaBin)
 		os.Exit(1)
 	}
-	if err := buildAndInstall(); err != nil {
-		fmt.Fprintln(os.Stderr, "e2e setup failed:", err)
-		os.Exit(1)
+	if os.Getenv(dumpRaceHelperEnv) != "1" {
+		if err := buildAndInstall(); err != nil {
+			fmt.Fprintln(os.Stderr, "e2e setup failed:", err)
+			os.Exit(1)
+		}
 	}
 	os.Exit(m.Run())
 }

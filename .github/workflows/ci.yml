@@ -39,12 +39,12 @@ jobs:
           fi
 
       - name: go vet
-        run: go vet ./...
+        run: go vet -tags e2e ./...
 
       - name: golangci-lint
         run: |
           go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
-          golangci-lint run --timeout=5m
+          golangci-lint run --build-tags e2e --timeout=5m
 
       - name: govulncheck
         run: |
@@ -85,4 +85,4 @@ jobs:
             -v "$PWD":/src \
             -w /src \
             aka-e2e:latest \
-            go test -tags e2e -count=1 ./test/e2e/...
+            go test -tags e2e -race -count=1 ./test/e2e/...

@@ -27,7 +27,7 @@ func TestResolveBaseURLLoopbackHonoured(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(baseURLEnv, tc.override)
 			if got := resolveBaseURL(anthropicDefault); got != tc.want {
-				t.Fatalf("got %q, want %q", got, anthropicDefault)
+				t.Fatalf("got %q, want %q", got, tc.want)
 			}
 		})
 	}

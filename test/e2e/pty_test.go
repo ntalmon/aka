@@ -313,6 +313,60 @@ func TestAnsiChunkerSplitMixedFirstPaintFixture(t *testing.T) {
 	}
 }
 
+// This is the regression test for MUST-FIX 1 from the final whole-branch
+// review: the OSC branch's [^\a]* was greedy over ESC too, so a single
+// ST-terminated OSC match could swallow straight through a later,
+// BEL-terminated OSC and delete whatever plain text sat between them.
+// termenv emits an ST-terminated OSC 11 (background colour query) on the
+// first coloured render of any test that doesn't set CI=1 — which is nearly
+// every interactive test in this suite — so the opener half of this bug is
+// already present in most streams; only a later BEL was needed to trigger
+// it. The failure mode is asymmetric and dangerous for an observation
+// harness: a swallow either times out an Expect (loud) or makes NotExpect/
+// CountOccurrences pass VACUOUSLY, because the text they check for was
+// silently deleted rather than merely hidden — silent is unacceptable here.
+// Fixed by excluding ESC from the OSC payload class: [^\a]* -> [^\a\x1b]*.
+func TestAnsiChunkerDoesNotSwallowTextBetweenTwoOSCSequences(t *testing.T) {
+	t.Parallel()
+
+	const full = "\x1b]11;?\x1b\\KEEP ME\x1b]0;t\a"
+	const want = "KEEP ME"
+
+	if got := feedAll([]byte(full)); got != want {
+		t.Fatalf("feedAll(two OSC sequences with text between) = %q, want %q — "+
+			"text between an ST-terminated OSC and a later BEL-terminated OSC must survive", got, want)
+	}
+
+	// Same property, split at every byte boundary, for parity with the other
+	// exhaustive OSC tests above.
+	for i := 1; i < len(full); i++ {
+		if got := feedAll([]byte(full[:i]), []byte(full[i:])); got != want {
+			t.Errorf("split at byte %d (%q | %q) = %q, want %q", i, full[:i], full[i:], got, want)
+		}
+	}
+
+	// The fuller repro from the review report: plain text before the first
+	// OSC and after the second too, with the swallowed span in all caps so a
+	// silent deletion is obvious in a failing diff.
+	const fullerRepro = "\x1b]11;?\x1b\\IMPORTANT TEXT\x1b]0;t\a done"
+	const fullerWant = "IMPORTANT TEXT done"
+	if got := feedAll([]byte(fullerRepro)); got != fullerWant {
+		t.Fatalf("feedAll(review repro) = %q, want %q", got, fullerWant)
+	}
+}
+
+// Documents the accompanying stripANSI decision: a lone BEL left over after
+// ansiRE runs (not the terminator of any OSC sequence it recognises) is
+// dropped rather than left as a literal byte in the stripped buffer. See the
+// reasoning in stripANSI's doc comment in pty.go.
+func TestStripANSIDropsLoneBEL(t *testing.T) {
+	t.Parallel()
+
+	if got := stripANSI("before\abeep after"); got != "beforebeep after" {
+		t.Fatalf("stripANSI(lone BEL) = %q, want %q", got, "beforebeep after")
+	}
+}
+
 // This is the test that would have caught the round-3 Critical bug directly:
 // it asserts feedAll's output for a *single, unsplit* chunk equals stripANSI
 // applied to the same string directly — no chunk boundary involved at all.

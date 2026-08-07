@@ -150,9 +150,13 @@ func TestScanWritesHistoryCursor(t *testing.T) {
 	env := scanEnv(t)
 	applyBothSuggestions(t, env)
 
+	// Exact match, not strings.Contains: {"total":60} also substring-matches
+	// {"total":160}, {"total":600}, {"total":1760}, etc., so a Contains check
+	// here would pass even if the recorded total were wrong by an order of
+	// magnitude.
 	cursor := env.ReadFile(".config", "aka", "zsh", "history_cursor.json")
-	if !strings.Contains(cursor, "60") {
-		t.Fatalf("cursor does not record the 60 seeded commands:\n%s", cursor)
+	if cursor != `{"total":60}` {
+		t.Fatalf("cursor = %q, want %q (60 seeded commands)", cursor, `{"total":60}`)
 	}
 }
 
@@ -222,9 +226,55 @@ func TestScanDiffBelowThresholdMakesNoLLMCall(t *testing.T) {
 	}
 }
 
-// Navigating back from the suggestion review must not leave a duplicate menu on
-// screen — the bug class documented in CLAUDE.md's "Lessons learned".
-func TestBackFromSuggestionsDoesNotDuplicateMenu(t *testing.T) {
+// Navigating back from the SUGGESTION review returns to the censor review
+// without re-entering PromptScanFlow (the scope+censor picker). This does
+// NOT cover the in-place scope<->censor transition inside PromptScanFlow —
+// see TestBackFromCensorReviewReturnsToScopePicker below for that, and the
+// doc comment on this test for why a genuine "was it drawn twice" guard is
+// not achievable at either transition with this harness.
+//
+// On this path, runScan (internal/cli/scan.go ~281-296) calls
+// ui.PrintCensorDiff + ui.ReviewCensored(..., false) directly and never
+// re-enters ui.PromptScanFlow, so the scope picker cannot possibly render
+// again here — the CountOccurrences(...) == 1 assertion below is true BY
+// CONSTRUCTION, not because it caught a bug. Renamed (from
+// TestBackFromSuggestionsDoesNotDuplicateMenu) and rewritten after the final
+// whole-branch review flagged that the original name/comment overclaimed
+// what this test proves: the double-menu bug this suite is meant to guard
+// against (CLAUDE.md's "Lessons learned") actually lives at a different
+// transition — scanFlowModel.updateCensor's tea.KeyLeft handler
+// (internal/ui/ui.go, back to sfStepScope) — which this test's back-press
+// (at the SUGGESTION review, a separate ui.ReviewSuggestions program) never
+// exercises.
+//
+// What this test DOES prove, and is worth keeping for: going back from the
+// suggestion review re-renders the censor review exactly once, and the flow
+// can still be driven to completion (Enter -> AKA FOUND) afterward.
+//
+// Why no test can assert "not drawn twice" as a render-count check at
+// EITHER transition: bubbletea's standard renderer only skips re-emitting
+// lines that are byte-identical to the previous frame. An in-place
+// transition (new step, different title/content) is not identical to the
+// previous frame, so it re-emits the changed lines into the byte stream
+// regardless of whether the redraw happened in place or a second copy was
+// printed below the first. Distinguishing "redrawn in place" from "printed
+// twice underneath" requires a terminal-emulator screen model (cursor
+// position + a 2D grid, so a redraw's cursor-up-then-overwrite is visible as
+// occupying the same rows rather than appending new ones) — Console
+// deliberately does not have one, it accumulates a stream
+// (raw/stripped strings.Builder), not a screen. A CountOccurrences(...) == 1
+// assertion only tells you the substring appears once in that stream; on
+// the suggestion-review path that's guaranteed by the code structure (no
+// second entry point exists to draw it again), and on the censor-review
+// path (a true in-place tea.Model step swap within one tea.NewProgram) it
+// would tell you nothing else either, since a single in-place transition
+// and an actual double-print both emit the changed text into the stream —
+// just at different byte offsets a flat string search can't distinguish.
+// A future `Console.VisibleScreen()` that replays raw bytes through a real
+// cursor-aware grid (e.g. wrapping a vt10x/similar terminal emulator) could
+// close this gap; noted here rather than built, since it's a meaningful
+// harness addition on its own, not a one-line fix.
+func TestBackFromSuggestionsDoesNotRestartScopeProgram(t *testing.T) {
 	t.Parallel()
 
 	env := scanEnv(t)
@@ -241,7 +291,8 @@ func TestBackFromSuggestionsDoesNotDuplicateMenu(t *testing.T) {
 	c.Expect("Are you sure you want to go back")
 	c.Send(Down, Enter) // "Yes, go back"
 
-	// The censor review comes back; the scope picker must not be redrawn.
+	// The censor review comes back; the scope picker must not be redrawn
+	// (guaranteed by runScan's control flow on this path — see doc comment).
 	c.Expect("commands to the LLM?")
 
 	if n := c.CountOccurrences("How much history to send to the LLM?"); n != 1 {
@@ -250,6 +301,49 @@ func TestBackFromSuggestionsDoesNotDuplicateMenu(t *testing.T) {
 
 	c.Send(Enter)
 	c.Expect("AKA FOUND")
+	c.Send(CtrlC)
+	_ = c.Wait()
+}
+
+// Pressing Left at the CENSOR review (inside ui.PromptScanFlow, before any
+// suggestion review exists) is the actual in-place transition CLAUDE.md's
+// "Lessons learned" double-menu bug lives at:
+// scanFlowModel.updateCensor's tea.KeyLeft case swaps m.step back to
+// sfStepScope within the SAME tea.NewProgram (internal/ui/ui.go
+// ~1535-1538), rather than starting a second program. No prior test in this
+// suite pressed Left at this specific step.
+//
+// This test asserts the transition works BEHAVIOURALLY — the scope picker
+// becomes interactive again and a fresh selection carries all the way
+// through to the suggestion review — not that anything was "drawn once".
+// See TestBackFromSuggestionsDoesNotRestartScopeProgram's doc comment for
+// why a render-count-based double-menu guard isn't achievable with this
+// harness at this transition either: a CountOccurrences(...) == 1 check here
+// would be just as unable to distinguish "redrawn in place" from "printed
+// twice below it" as it is on the suggestion-review path, since both put the
+// same changed text into the stream exactly once either way.
+func TestBackFromCensorReviewReturnsToScopePicker(t *testing.T) {
+	t.Parallel()
+
+	env := scanEnv(t)
+
+	c := env.Spawn("scan")
+	c.Expect("How much history to send to the LLM?")
+	c.Send(Enter) // "Send full history"
+
+	c.Expect("commands to the LLM?")
+	c.Send(Left) // back to the scope picker, in place within PromptScanFlow
+
+	c.Expect("How much history to send to the LLM?")
+	c.Send(Enter) // make a fresh selection ("Send full history" again)
+
+	// The censor review must come back and the flow must still reach the
+	// suggestion review afterward — proving the in-place back transition
+	// left the program in a working state, not a stuck or corrupted one.
+	c.Expect("commands to the LLM?")
+	c.Send(Enter) // send as-is
+	c.Expect("AKA FOUND")
+
 	c.Send(CtrlC)
 	_ = c.Wait()
 }

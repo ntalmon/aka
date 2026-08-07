@@ -36,7 +36,7 @@ const defaultExpectTimeout = 10 * time.Second
 
 // ansiRE matches CSI sequences (colour, cursor movement, screen clears) and OSC
 // sequences, which is everything lipgloss and bubbletea emit.
-var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\a]*(\a|\x1b\\)|\x1b[()][B0]`)
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\a\x1b]*(\a|\x1b\\)|\x1b[()][B0]`)
 
 // Console drives a process attached to a real pseudo-terminal.
 //
@@ -257,8 +257,23 @@ func splitTrailingEscape(data []byte) (safe, rest []byte) {
 
 // stripANSI removes escape sequences and normalises PTY line endings so
 // assertions can match plain text.
+//
+// It also drops any lone BEL (\a) left over once ansiRE has run. \a is a
+// non-printing terminal bell control byte; before the ansiRE fix that
+// excluded ESC from an OSC sequence's payload class ([^\a]* -> [^\a\x1b]*,
+// see the fix for the review's MUST-FIX 1), a stray BEL was always consumed
+// as part of *some* OSC match, even when that match had illegitimately
+// swallowed unrelated text along the way. Now that the OSC matcher is
+// exact, a \a that is not the genuine terminator of a well-formed OSC
+// sequence it recognises (malformed/adversarial input, not anything this
+// codebase's own dependencies emit) can be left sitting outside any match.
+// It carries no visible information, so leaving it in the stripped buffer
+// would only ever risk corrupting an exact-match assertion (e.g.
+// TestConsoleStripsANSI's Screen() == "styled\n") for no benefit — the same
+// reasoning that already justifies normalising \r/\r\n below.
 func stripANSI(s string) string {
 	s = ansiRE.ReplaceAllString(s, "")
+	s = strings.ReplaceAll(s, "\a", "")
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	return strings.ReplaceAll(s, "\r", "")
 }
