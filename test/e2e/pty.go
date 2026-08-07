@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -91,19 +92,59 @@ func newConsole(t *testing.T, cmd *exec.Cmd) *Console {
 func (c *Console) readLoop() {
 	defer close(c.readDone)
 	buf := make([]byte, 4096)
+	// pending holds bytes carried over from the previous chunk that might be
+	// the start of a CSI/OSC sequence Read() cut off mid-way. It is owned
+	// exclusively by this goroutine, so it needs no locking of its own.
+	var pending []byte
 	for {
 		n, err := c.ptmx.Read(buf)
 		if n > 0 {
-			chunk := string(buf[:n])
+			chunk := buf[:n]
 			c.mu.Lock()
-			c.raw.WriteString(chunk)
-			c.stripped.WriteString(stripANSI(chunk))
+			c.raw.Write(chunk)
+			data := append(pending, chunk...)
+			safe, rest := splitTrailingEscape(data)
+			c.stripped.WriteString(stripANSI(string(safe)))
 			c.mu.Unlock()
+			pending = rest
 		}
 		if err != nil {
+			if len(pending) > 0 {
+				// Stream ended mid-sequence (or with a stray ESC that never
+				// resolved). Flush best-effort rather than dropping it.
+				c.mu.Lock()
+				c.stripped.WriteString(stripANSI(string(pending)))
+				c.mu.Unlock()
+			}
 			return // EIO on close is normal for a PTY
 		}
 	}
+}
+
+// splitTrailingEscape separates data into a safe-to-strip prefix and a
+// possibly-incomplete escape sequence at the very end. readLoop feeds output
+// through stripANSI in whatever chunks Read() happens to return them, and a
+// bubbletea/huh full-screen redraw can exceed one 4096-byte chunk, so a
+// CSI/OSC sequence can be split across two reads. Stripping each chunk in
+// isolation would let the truncated half leak into the stripped buffer as
+// literal bytes, corrupting the exact buffer Expect/Screen assert against.
+//
+// data's last ESC (0x1b) byte is used as the candidate cut point: if what
+// follows it is already a complete, recognised escape sequence, everything
+// is safe to strip (anything after a complete match is guaranteed plain text,
+// since we picked the *last* ESC in data). Otherwise the sequence is still
+// accumulating bytes, so everything from that ESC onward is held back for the
+// next call.
+func splitTrailingEscape(data []byte) (safe, rest []byte) {
+	i := bytes.LastIndexByte(data, 0x1b)
+	if i < 0 {
+		return data, nil
+	}
+	tail := data[i:]
+	if loc := ansiRE.FindIndex(tail); loc != nil && loc[0] == 0 {
+		return data, nil
+	}
+	return data[:i], tail
 }
 
 // stripANSI removes escape sequences and normalises PTY line endings so
@@ -118,7 +159,7 @@ func stripANSI(s string) string {
 // through it. Fatals with a screen dump on timeout.
 func (c *Console) Expect(substr string) {
 	c.t.Helper()
-	c.expectFunc("substring "+strconv.Quote(substr), func(pending string) int {
+	c.expectFunc("substring "+strconv.Quote(substr), defaultExpectTimeout, func(pending string) int {
 		if i := strings.Index(pending, substr); i >= 0 {
 			return i + len(substr)
 		}
@@ -133,7 +174,7 @@ func (c *Console) ExpectRe(pattern string) {
 	if err != nil {
 		c.t.Fatalf("bad ExpectRe pattern %q: %v", pattern, err)
 	}
-	c.expectFunc("pattern "+strconv.Quote(pattern), func(pending string) int {
+	c.expectFunc("pattern "+strconv.Quote(pattern), defaultExpectTimeout, func(pending string) int {
 		if loc := re.FindStringIndex(pending); loc != nil {
 			return loc[1]
 		}
@@ -142,10 +183,13 @@ func (c *Console) ExpectRe(pattern string) {
 }
 
 // expectFunc polls the pending (unconsumed) output until match returns a
-// non-negative end offset, then advances the consume point.
-func (c *Console) expectFunc(what string, match func(pending string) int) {
+// non-negative end offset, then advances the consume point. timeout is a
+// parameter (rather than always defaultExpectTimeout) so tests can exercise
+// the timeout/dump() path deterministically and fast, instead of waiting out
+// the real 10s production timeout.
+func (c *Console) expectFunc(what string, timeout time.Duration, match func(pending string) int) {
 	c.t.Helper()
-	deadline := time.Now().Add(defaultExpectTimeout)
+	deadline := time.Now().Add(timeout)
 
 	for {
 		c.mu.Lock()
@@ -159,7 +203,7 @@ func (c *Console) expectFunc(what string, match func(pending string) int) {
 
 		if time.Now().After(deadline) {
 			c.t.Fatalf("timed out after %s waiting for %s\n\n%s",
-				defaultExpectTimeout, what, c.dump())
+				timeout, what, c.dump())
 		}
 		select {
 		case <-c.readDone:
@@ -212,13 +256,29 @@ func (c *Console) SendLine(s string) {
 }
 
 // Screen returns everything received so far, ANSI-stripped.
+//
+// strings.Builder.String() does not copy: it aliases the builder's internal
+// backing array via an unsafe cast. readLoop's WriteString can later append
+// into that same array in place (reusing spare capacity) and mutate bytes a
+// caller here is still reading, once the lock is released — a real,
+// race-detector-visible data race. strings.Clone forces an actual copy while
+// the lock is still held, so the returned string is fully independent.
 func (c *Console) Screen() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.stripped.String()
+	return strings.Clone(c.stripped.String())
 }
 
-// Wait closes the terminal, waits for the process, and returns its exit code.
+// Wait blocks until the process exits, reaps it, and returns its exit code.
+// It does not proactively close the PTY itself: it waits for c.readDone,
+// which readLoop closes once it observes EOF/EIO — the natural consequence
+// of the child exiting and the kernel tearing down the slave side. Closing
+// the master here before that happens would risk delivering a still-running
+// child a stray SIGHUP and returning a misleading exit code for a process
+// that never actually finished — exactly the shape of bug Tasks 7-11 would
+// hit against real bubbletea sessions that block on stdin until told to
+// quit. The PTY is instead closed unconditionally at test cleanup (see
+// newConsole).
 func (c *Console) Wait() int {
 	c.t.Helper()
 	c.waitOnce.Do(func() {
@@ -239,10 +299,14 @@ func (c *Console) Wait() int {
 
 // dump renders the tail of the session for failure messages. A PTY test that
 // fails with only "timed out waiting for X" is unmaintainable.
+//
+// Both builders are cloned before the lock is released — see Screen for why
+// a bare .String() here would be a data race against the concurrent
+// readLoop goroutine.
 func (c *Console) dump() string {
 	c.mu.Lock()
-	stripped := c.stripped.String()
-	raw := c.raw.String()
+	stripped := strings.Clone(c.stripped.String())
+	raw := strings.Clone(c.raw.String())
 	c.mu.Unlock()
 
 	var sb strings.Builder
