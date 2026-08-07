@@ -21,9 +21,12 @@ type Suggestion struct {
 	ExampleUses []string `json:"example_uses"`
 }
 
-// Param mirrors aliases.Param.
+// Param mirrors aliases.Param. internal/suggest marks "type" REQUIRED in the
+// tool schema, so fixtures that omit it are not representative of what a real
+// provider would return.
 type Param struct {
 	Name        string `json:"name"`
+	Type        string `json:"type,omitempty"`
 	Description string `json:"description,omitempty"`
 }
 

@@ -238,6 +238,18 @@ func (e *Env) Installed() []aliases.InstalledEntry {
 	return entries
 }
 
+// runCommand runs an arbitrary command in the isolated environment (same HOME,
+// PATH, and extra env as aka invocations) and returns combined output and exit
+// code. Used to shell out to `zsh -n`/`bash -n` etc. against files under e.Home.
+func runCommand(t *testing.T, e *Env, name string, args ...string) (string, int) {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Env = e.environ(e.extraEnv...)
+	cmd.Dir = e.Home
+	out, err := cmd.CombinedOutput()
+	return string(out), exitCodeOf(t, err, out)
+}
+
 // Backups lists the timestamped snapshot filenames, sorted.
 func (e *Env) Backups() []string {
 	e.t.Helper()
