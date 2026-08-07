@@ -19,11 +19,19 @@ import (
 // review (see task-9-report.md addendum for the full ruling):
 //
 //   - A bare IP address (10.1.2.3, from `ssh deploy@10.1.2.3`) is not a
-//     secret-detection case at all. Pass 2 (ParameterizeVars) only masks IPs
-//     as a side effect of parameterizing *repeated* structural values — it
-//     was never a secret-redaction rule, so an unmasked one-off IP is working
-//     as designed, not a gap. There is intentionally no assertion for it
-//     anywhere in this file.
+//     secret-detection case at all. ParameterizeVars skips IPs
+//     unconditionally, before any clustering/repetition logic ever runs:
+//     `if peekTyp == "PATH" || peekTyp == "PORT" || peekTyp == "IP" {
+//     continue }` (internal/censor/censor.go, in the per-slot loop that
+//     decides what to parameterize). This is not "IPs only get masked when
+//     they repeat" — IPs are never parameterized at all, full stop, no
+//     matter how many distinct or repeated occurrences appear in the batch.
+//     The repo's own internal/censor/clustering_test.go
+//     (TestParameterizeVarsIPVaryingNotCensored) proves this directly with
+//     three distinct ssh IPs that all stay unmasked. It was never a
+//     secret-redaction rule, so an unmasked IP — one-off or repeated — is
+//     working as designed, not a gap. There is intentionally no assertion
+//     for it anywhere in this file.
 //   - "hunter2supersecret" (mysql's `-phunter2supersecret` flag, from
 //     `mysql -u admin -phunter2supersecret -h db.internal`) is a real censor
 //     gap the product owner has chosen not to fix yet. It is pinned on its
@@ -44,6 +52,14 @@ var secretLiterals = map[string]string{
 // TestSecretsNeverReachTheWire's strict loop.
 const mysqlPasswordFlagCmd = `mysql -u admin -phunter2supersecret -h db.internal`
 
+// commitHashLiteral is a real 40-hex-char SHA-1 (sha1sum of a fixed string,
+// not derived from any actual repo object) used by
+// TestCommitMessagesSurviveCensoring to assert that commit hashes — not just
+// commit messages — survive both censor passes, per CLAUDE.md's documented
+// "git commit hashes and commit messages are intentionally not censored"
+// invariant.
+const commitHashLiteral = "331ea0017b8e3d4d49d61902238be50bf71b3067"
+
 // secretHistory builds a history containing every secret plus enough ordinary
 // commands that the scan proceeds normally (full history is sent in one shot
 // regardless of size, but a small history reads as unrealistic and risks
@@ -55,6 +71,7 @@ func secretHistory() []string {
 		"curl https://admin:s3cr3tpassw0rd@internal.example.com/health",
 		"git commit -m 'fix the login redirect'",
 		"git log --oneline -5",
+		"git show " + commitHashLiteral,
 		mysqlPasswordFlagCmd,
 	}
 	for _, cmd := range secretLiterals {
@@ -123,21 +140,38 @@ func TestSecretsNeverReachTheWire(t *testing.T) {
 //     (internal/censor/censor.go) — it requires a literal `=` between the
 //     keyword and the value. mysql's `-phunter2supersecret` has no
 //     separator at all, so the regex never matches.
-//   - Pass 1's entropy heuristic (isLikelySecret) requires len(s) >= 20
-//     before it even computes Shannon entropy. "hunter2supersecret" is 18
-//     characters, so it never reaches the entropy check regardless of how
-//     high its entropy would score.
+//   - The entropy heuristic does NOT reject this on length, and lowering
+//     the length floor would NOT close this gap — that first guess is
+//     wrong, so it's worth spelling out precisely what actually happens.
+//     CensorSecrets tokenizes each command by splitting on whitespace
+//     (`strings.FieldsFunc(cmd, unicode.IsSpace)`) before running the
+//     entropy check, so the token isLikelySecret actually evaluates is not
+//     the bare password "hunter2supersecret" (18 chars) — it's the whole
+//     whitespace-delimited flag, "-phunter2supersecret" (20 chars, `-p`
+//     glued directly onto the value with no separator to split on). That
+//     clears isLikelySecret's `len(s) >= 20` floor and its 2-of-3
+//     char-class check, so it DOES reach shannonEntropy — and fails there:
+//     "-phunter2supersecret" scores ~3.284 bits/char (verified by running
+//     the real shannonEntropy against it), well under the 4.5 bits/char
+//     threshold, because it reads as ordinary pronounceable words
+//     ("hunter", "super", "secret") rather than random-looking data.
 //
 // So the value passes both passes untouched and is sent to the LLM in the
-// clear. This is a real finding, reported to and reviewed by the product
-// owner, who has chosen NOT to fix it for now — this test documents that
-// decision, it does not endorse the behaviour. It intentionally asserts the
-// leak (rather than the absence of one) so that if someone later closes this
-// gap in internal/censor/censor.go, this test starts failing loudly instead
-// of silently going stale. When that happens, deleting this test (and
-// folding the mysql command into TestSecretsNeverReachTheWire's strict set
-// instead) is the correct response — do not "fix" this test to keep passing
-// against improved censoring.
+// clear — not because it's too short, but because it's linguistically
+// low-entropy once you look at the token the code actually sees. A real fix
+// needs either a pattern for glued `-p<value>`-style flags (mysql, curl
+// `-u user:pass`, etc.) or a lower entropy threshold — and a lower threshold
+// would trade this false negative for false positives on ordinary
+// multi-word text, so it's not a free win. This is a real finding, reported
+// to and reviewed by the product owner, who has chosen NOT to fix it for
+// now — this test documents that decision, it does not endorse the
+// behaviour. It intentionally asserts the leak (rather than the absence of
+// one) so that if someone later closes this gap in
+// internal/censor/censor.go, this test starts failing loudly instead of
+// silently going stale. When that happens, deleting this test (and folding
+// the mysql command into TestSecretsNeverReachTheWire's strict set instead)
+// is the correct response — do not "fix" this test to keep passing against
+// improved censoring.
 func TestKnownCensorGapPasswordFlagWithoutEquals(t *testing.T) {
 	t.Parallel()
 
@@ -164,12 +198,19 @@ func TestKnownCensorGapPasswordFlagWithoutEquals(t *testing.T) {
 // placeholderRE matches the real placeholder format emitted by
 // internal/censor/censor.go: "<LABEL_n>" where LABEL is one of the fixed
 // tokens CensorSecrets/ParameterizeVars produce (TOKEN, PASSWORD, URL_CREDS,
-// SECRET from pass 1; PATH, HOST, IP, VAR from pass 2 — though PATH is never
-// actually emitted as a placeholder since inferVarType's PATH/PORT case is
-// skipped before a placeholder is assigned). The brief's original assertion
-// only checked for the presence of "<" and ">" anywhere in the body, which
-// would also match template syntax or incidental angle brackets in an
-// unrelated JSON field; this tightens it to the actual placeholder shape.
+// SECRET from pass 1; HOST, VAR from pass 2). PATH and IP are included in the
+// alternation below for completeness with inferVarType's full label set, but
+// neither is ever actually emitted as a placeholder: ParameterizeVars's
+// per-slot loop skips `peekTyp == "PATH" || peekTyp == "PORT" ||
+// peekTyp == "IP"` unconditionally, before a placeholder is ever assigned —
+// this is not conditional on repetition/clustering, IPs (and paths, and
+// ports) are excluded outright regardless of how many distinct or repeated
+// occurrences appear in a batch. See secretLiterals's doc comment above for
+// the same point, with the corroborating unit test reference. The brief's
+// original assertion only checked for the presence of "<" and ">" anywhere
+// in the body, which would also match template syntax or incidental angle
+// brackets in an unrelated JSON field; this tightens it to the actual
+// placeholder shape.
 //
 // One more layer matters for "the actual bytes that crossed the socket":
 // internal/llm/anthropic.go and openaicompat.go both build the request body
@@ -203,7 +244,10 @@ func TestPlaceholdersAppearOnTheWire(t *testing.T) {
 }
 
 // Commit messages and hashes are deliberately not censored — the LLM needs them
-// to recognise workflow patterns.
+// to recognise workflow patterns. secretHistory includes both a commit
+// message (`git commit -m 'fix the login redirect'`) and a real 40-hex-char
+// SHA (`git show `+commitHashLiteral), so this test asserts both survive
+// rather than just the message half.
 func TestCommitMessagesSurviveCensoring(t *testing.T) {
 	t.Parallel()
 
@@ -217,6 +261,9 @@ func TestCommitMessagesSurviveCensoring(t *testing.T) {
 	body := string(env.LLM.Requests()[0].Body)
 	if !strings.Contains(body, "fix the login redirect") {
 		t.Errorf("commit message was censored; it should survive:\n%s", truncate(body, 4000))
+	}
+	if !strings.Contains(body, commitHashLiteral) {
+		t.Errorf("commit hash %q was censored; it should survive:\n%s", commitHashLiteral, truncate(body, 4000))
 	}
 }
 
